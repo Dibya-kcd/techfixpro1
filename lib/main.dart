@@ -72,7 +72,6 @@ class _AuthGate extends ConsumerStatefulWidget {
 class _AuthGateState extends ConsumerState<_AuthGate> {
   String _ownerUid    = '';
   String _ownerShopId = '';
-  bool   _loaded      = false;
 
   @override
   void initState() {
@@ -93,7 +92,6 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         setState(() {
           _ownerUid    = uid;
           _ownerShopId = shopId;
-          _loaded      = true;
         });
 
         // Trigger staff reload now that we have a real shopId.
@@ -103,7 +101,7 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         }
       }
     } catch (_) {
-      if (mounted) setState(() => _loaded = true);
+      if (mounted) setState(() {});
     }
   }
 

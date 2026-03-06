@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -459,7 +459,7 @@ class ShopProfilePage extends ConsumerStatefulWidget {
 
 class _ShopProfileState extends ConsumerState<ShopProfilePage> {
   late final TextEditingController _shopName, _owner, _phone, _email, _address, _gst;
-  String? _logoPath;
+  Uint8List? _logoBytes; // logo picked by user (not yet saved to Firebase)
 
   @override
   void initState() {
@@ -506,7 +506,7 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
         GestureDetector(
           onTap: () async {
             final path = await pickPhoto(context);
-            if (path != null) setState(() => _logoPath = path);
+            if (path != null) setState(() => _logoBytes = path);
           },
         child: Container(
           width: 90, height: 90,
@@ -515,9 +515,9 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: C.primary.withValues(alpha: 0.5), width: 2),
             ),
-            child: _logoPath != null
+            child: _logoBytes != null
                 ? ClipRRect(borderRadius: BorderRadius.circular(18),
-                    child: Image.file(File(_logoPath!), fit: BoxFit.cover))
+                    child: Image.memory(_logoBytes!, fit: BoxFit.cover))
                 : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     const Icon(Icons.store_outlined, color: C.primary, size: 34),
                     const SizedBox(height: 4),
@@ -530,7 +530,7 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
         TextButton.icon(
           onPressed: () async {
             final path = await pickPhoto(context);
-            if (path != null) setState(() => _logoPath = path);
+            if (path != null) setState(() => _logoBytes = path);
           },
           icon: const Icon(Icons.upload_outlined, size: 16, color: C.primary),
           label: Text('Upload Logo', style: GoogleFonts.syne(

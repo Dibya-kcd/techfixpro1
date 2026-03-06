@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:uuid/uuid.dart';
@@ -69,7 +68,7 @@ class PhotoService {
 
       // Read as bytes and compress
       // ignore: avoid_dynamic_calls
-      final rawBytes = await file.readAsBytes() as Uint8List;
+      final rawBytes = await file.readAsBytes();
       final compressed = await _compressBytes(rawBytes);
 
       return uploadBytes(compressed, folder, onProgress: onProgress);
