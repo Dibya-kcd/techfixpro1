@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../models/m.dart';
 import 'active_session.dart';
+import 'seed.dart';
 
 String _ts() {
   final n = DateTime.now();
@@ -57,6 +58,61 @@ final currentUserProvider = StreamProvider<SessionUser?>((ref) {
       }
     }
 
+    // ── Auto-resume interrupted registration ──────────────────────────────
+    // users/{uid} missing after 5 retries — check if registrations/{uid}
+    // exists and complete the setup automatically.
+    debugPrint('⚠️ currentUserProvider: users/${firebaseUser.uid} missing — checking registrations/');
+    try {
+      final regSnap = await FirebaseDatabase.instance
+          .ref('registrations/${firebaseUser.uid}').get();
+      if (regSnap.exists && regSnap.value is Map) {
+        final reg = Map<String, dynamic>.from(regSnap.value as Map);
+        final shopId   = (reg['shopId']   as String?) ?? '';
+        final shopName = (reg['shopName'] as String?) ?? '';
+        final plan     = (reg['plan']     as String?) ?? 'free';
+        if (shopId.isNotEmpty) {
+          debugPrint('🔄 Auto-resuming setup for ${firebaseUser.uid} / $shopId');
+          await ShopOnboarding.resumeSetup(
+            shopId:     shopId,
+            ownerUid:   firebaseUser.uid,
+            ownerName:  firebaseUser.displayName ?? firebaseUser.email!.split('@').first,
+            ownerEmail: firebaseUser.email ?? '',
+            ownerPhone: '',
+            shopName:   shopName,
+            plan:       plan,
+          );
+          // Re-read the now-created users/ record
+          final snap2 = await FirebaseDatabase.instance
+              .ref('users/${firebaseUser.uid}').get();
+          if (snap2.exists && snap2.value is Map) {
+            final d = Map<String, dynamic>.from(snap2.value as Map);
+            debugPrint('✅ Auto-resume complete for ${firebaseUser.uid}');
+            FirebaseDatabase.instance
+                .ref('users/${firebaseUser.uid}/lastLoginAt')
+                .set(_ts())
+                .catchError((_) {});
+            return SessionUser(
+              uid:              firebaseUser.uid,
+              email:            (d['email']       as String?) ?? firebaseUser.email ?? '',
+              displayName:      (d['displayName'] as String?) ?? firebaseUser.displayName ?? 'User',
+              role:             (d['role']        as String?) ?? 'admin',
+              shopId:           (d['shopId']      as String?) ?? shopId,
+              phone:            (d['phone']       as String?) ?? '',
+              pinHash:          (d['pin_hash']    as String?) ?? '',
+              biometricEnabled: (d['biometricEnabled'] as bool?) ?? false,
+              isActive:         (d['isActive']    as bool?) ?? true,
+              isOwner:          (d['isOwner']     as bool?) ?? true,
+              lastLoginAt:      (d['lastLoginAt'] as String?) ?? '',
+              createdAt:        (d['createdAt']   as String?) ?? '',
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Auto-resume failed: $e');
+    }
+
+    // True fallback — no registration record found either
     debugPrint('⚠️ currentUserProvider: using fallback for ${firebaseUser.uid}');
     return SessionUser(
       uid: firebaseUser.uid, email: firebaseUser.email ?? '',
