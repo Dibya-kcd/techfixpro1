@@ -179,6 +179,17 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
     setState(() { _loading = true; _error = null; });
     try {
       final shopId = FirebaseDatabase.instance.ref('shops').push().key!;
+
+      // Save pending info to SharedPreferences BEFORE writing to DB.
+      // If the DB write fails mid-way, login will detect the partial state
+      // via registrations/{uid} and call resumeSetup() automatically.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('pending_shopId',    shopId);
+      await prefs.setString('pending_shopName',  _pendingShopName!);
+      await prefs.setString('pending_ownerName', _pendingOwnerName!);
+      await prefs.setString('pending_phone',     _pendingPhone!);
+      await prefs.setString('pending_pin',       _pendingPin!);
+
       await ShopOnboarding.initialize(
         shopId:     shopId,
         ownerUid:   user.uid,
@@ -188,13 +199,27 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
         shopName:   _pendingShopName!,
         ownerPin:   _pendingPin!,
       );
+
+      // Success — clear pending data
+      await prefs.remove('pending_shopId');
+      await prefs.remove('pending_shopName');
+      await prefs.remove('pending_ownerName');
+      await prefs.remove('pending_phone');
+      await prefs.remove('pending_pin');
+
       await ref.read(settingsProvider.notifier).loadFromFirebase(shopId);
       if (!mounted) return;
       setState(() { _step = _Step.done; _loading = false; });
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
     } catch (e) {
-      if (mounted) setState(() { _error = 'Account setup failed: $e'; _loading = false; });
+      // DB write failed — pending data is still in SharedPreferences.
+      // Next login will auto-resume via registrations/{uid}.
+      if (mounted) setState(() {
+        _error = 'Setup interrupted. Please log in to resume — your account was created.';
+        _loading = false;
+        _step = _Step.verifyEmail; // stay on screen, don't delete account
+      });
     }
   }
 

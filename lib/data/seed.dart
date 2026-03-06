@@ -119,6 +119,81 @@ class ShopOnboarding {
     debugPrint('🎉 Shop onboarding complete — shopId: $shopId  owner: $ownerUid');
   }
 
+
+  // ── Resume an interrupted registration ────────────────────────────────────
+  // Called by auth_login.dart when users/{uid} is missing but
+  // registrations/{uid} exists — meaning Step 2 previously failed.
+  // Skips Step 1 (registrations already written), re-runs Steps 2 & 3.
+  static Future<void> resumeSetup({
+    required String shopId,
+    required String ownerUid,
+    required String ownerName,
+    required String ownerEmail,
+    required String ownerPhone,
+    required String shopName,
+    String plan = 'free',
+    String ownerPin = '0000',  // default PIN — owner can change in settings
+  }) async {
+    debugPrint('🔄 Resuming interrupted setup for $ownerUid / $shopId');
+    final db = FirebaseDatabase.instance;
+    final now = DateTime.now().toIso8601String();
+
+    // Check if shop already exists (partial write) — use update not set
+    final shopSnap = await db.ref('shops/$shopId').get();
+    final userSnap = await db.ref('users/$ownerUid').get();
+
+    final updates = <String, dynamic>{};
+
+    if (!shopSnap.exists) {
+      updates['shops/$shopId'] = _buildShopDoc(
+        shopId:    shopId,
+        shopName:  shopName,
+        ownerUid:  ownerUid,
+        ownerName: ownerName,
+        ownerEmail:ownerEmail,
+        ownerPhone:ownerPhone,
+        plan:      plan,
+        now:       now,
+      );
+      debugPrint('  → will create shops/$shopId');
+    } else {
+      debugPrint('  → shops/$shopId already exists, skipping');
+    }
+
+    if (!userSnap.exists) {
+      updates['users/$ownerUid'] = {
+        'uid':              ownerUid,
+        'shopId':           shopId,
+        'displayName':      ownerName,
+        'email':            ownerEmail,
+        'role':             'admin',
+        'isOwner':          true,
+        'pin':              ownerPin,
+        'pin_hash':         '',
+        'phone':            ownerPhone,
+        'isActive':         true,
+        'biometricEnabled': false,
+        'specialization':   'Management',
+        'totalJobs':        0,
+        'completedJobs':    0,
+        'rating':           5.0,
+        'joinedAt':         now,
+        'lastLoginAt':      now,
+        'createdAt':        now,
+      };
+      debugPrint('  → will create users/$ownerUid');
+    } else {
+      debugPrint('  → users/$ownerUid already exists, skipping');
+    }
+
+    if (updates.isNotEmpty) {
+      await db.ref().update(updates);
+      debugPrint('✅ Resume complete — $ownerUid');
+    } else {
+      debugPrint('ℹ️  Nothing to resume — both records already exist');
+    }
+  }
+
   // ── Build the full shop document ────────────────────────────────────────────
   static Map<String, dynamic> _buildShopDoc({
     required String shopId,

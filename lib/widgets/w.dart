@@ -5,8 +5,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../theme/t.dart';
-// dart:io only on non-web
-import 'dart:io' if (dart.library.html) 'dart:html' as native_io;
+// dart:io for File
+import 'dart:io' as io;
 
 // ── Money formatter ───────────────────────────────────────────
 String fmtMoney(double n) => '₹${n.toStringAsFixed(0).replaceAllMapped(
@@ -673,7 +673,7 @@ class _PhotoTile extends StatelessWidget {
                       )
                     : _isLocal
                         // ignore: avoid_dynamic_calls
-                        ? Image.file(native_io.File(path), fit: BoxFit.cover,
+                        ? Image.file(io.File(path), fit: BoxFit.cover,
                             errorBuilder: (_, __, ___) => const Center(
                                 child: Icon(Icons.broken_image_outlined,
                                     color: C.textMuted, size: 30)))
@@ -797,7 +797,7 @@ class _PhotoGalleryState extends State<_PhotoGallery> {
                       errorWidget: (_, __, ___) => _broken())
                   : (!kIsWeb && (src.startsWith('/') || src.startsWith('file:')))
                       // ignore: avoid_dynamic_calls
-                      ? Image.file(native_io.File(src), fit: BoxFit.contain,
+                      ? Image.file(io.File(src), fit: BoxFit.contain,
                           errorBuilder: (_, __, ___) => _broken())
                       : _broken(),
             ),

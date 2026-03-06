@@ -2,8 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:uuid/uuid.dart';
 
-// dart:io is only imported on non-web platforms
-import 'dart:io' if (dart.library.html) 'dart:html' as io_or_html;
+// dart:io for File
+import 'dart:io' as io;
 
 class PhotoService {
   static final _storage = FirebaseStorage.instance;
@@ -59,7 +59,7 @@ class PhotoService {
 
     try {
       // ignore: avoid_dynamic_calls
-      final file = io_or_html.File(path);
+      final file = io.File(path);
       // ignore: avoid_dynamic_calls
       if (!await file.exists()) {
         debugPrint('[PhotoService] File does not exist: $path');

@@ -16,6 +16,7 @@ import '../theme/t.dart';
 import '../widgets/w.dart';
 import '../data/providers.dart';
 import 'auth_signup.dart';
+import '../data/seed.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -89,11 +90,53 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       final uid = user.uid;
 
       final userSnap = await db.ref('users/$uid').get();
+
+      // ── Resume incomplete registration ─────────────────────────────────
+      // users/{uid} missing means Step 2 of onboarding failed previously.
+      // Check registrations/{uid} and auto-complete setup.
       if (!userSnap.exists || userSnap.value is! Map) {
+        final regSnap = await db.ref('registrations/$uid').get();
+        if (regSnap.exists && regSnap.value is Map) {
+          final reg = Map<String, dynamic>.from(regSnap.value as Map);
+          final shopId = (reg['shopId'] as String?) ?? '';
+          final shopName = (reg['shopName'] as String?) ?? '';
+          final plan = (reg['plan'] as String?) ?? 'free';
+          if (shopId.isNotEmpty) {
+            setState(() => _error = null);
+            // Complete the interrupted onboarding
+            try {
+              await ShopOnboarding.resumeSetup(
+                shopId:     shopId,
+                ownerUid:   uid,
+                ownerName:  user.displayName ?? user.email!.split('@').first,
+                ownerEmail: user.email!,
+                ownerPhone: '',
+                shopName:   shopName,
+                plan:       plan,
+              );
+              // Fall through — userSnap will now exist, re-read below
+              final retrySnap = await db.ref('users/$uid').get();
+              if (!retrySnap.exists) throw Exception('Setup failed after resume');
+              final ud2 = Map<String, dynamic>.from(retrySnap.value as Map);
+              final resumedShopId = (ud2['shopId'] as String?) ?? '';
+              try { await ref.read(settingsProvider.notifier).loadFromFirebase(resumedShopId); } catch (_) {}
+              try { await ref.read(staffProvider.notifier).loadFromFirebase(resumedShopId); } catch (_) {}
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setString('shopId', resumedShopId);
+              if (mounted) setState(() => _loading = false);
+              return;
+            } catch (e) {
+              await FirebaseAuth.instance.signOut();
+              setState(() => _error = 'Account setup incomplete. Try again or contact support.');
+              return;
+            }
+          }
+        }
         await FirebaseAuth.instance.signOut();
-        setState(() => _error = 'Account not found. Contact support.');
+        setState(() => _error = 'Account not found. Please sign up first.');
         return;
       }
+
       final ud = Map<String, dynamic>.from(userSnap.value as Map);
       if (!(ud['isActive'] as bool? ?? true)) {
         await FirebaseAuth.instance.signOut();
