@@ -39,8 +39,6 @@ class _StaffLockScreenState extends ConsumerState<StaffLockScreen>
   Timer? _lockTimer;
 
   // Logo secret tap counter
-  int _logoTaps = 0;
-  DateTime? _firstTap;
 
   // Animations
   late AnimationController _shakeCtrl;
@@ -101,22 +99,10 @@ class _StaffLockScreenState extends ConsumerState<StaffLockScreen>
       ? 0
       : _lockUntil!.difference(DateTime.now()).inSeconds.clamp(0, 999);
 
-  // ── Hidden logo 5-tap ──────────────────────────────────────────────────────
-  void _onLogoTap() {
-    HapticFeedback.selectionClick();
-    final now = DateTime.now();
-    if (_firstTap == null || now.difference(_firstTap!).inSeconds > 4) {
-      _firstTap = now;
-      _logoTaps = 1;
-    } else {
-      _logoTaps++;
-    }
-    if (_logoTaps >= 5) {
-      _logoTaps = 0;
-      _firstTap = null;
-      HapticFeedback.mediumImpact();
-      _showOwnerBottomSheet();
-    }
+  // ── Hidden logo long-press (2 s) → owner access ────────────────────────────
+  void _onLogoLongPress() {
+    HapticFeedback.mediumImpact();
+    _showOwnerBottomSheet();
   }
 
   // ── Staff PIN login ────────────────────────────────────────────────────────
@@ -234,10 +220,10 @@ class _StaffLockScreenState extends ConsumerState<StaffLockScreen>
                     _LiveClock(),
                     // Centre: Firebase connection status dot
                     const _FirebaseDot(),
-                    // Right: Shop logo — secret 5-tap zone (NO visual hint to users)
+                    // Right: Shop logo — 2-second long-press → owner access (no visual hint)
                     GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTap: _onLogoTap,
+                      onLongPress: _onLogoLongPress,
                       child: Consumer(
                         builder: (_, ref, __) {
                           final logoUrl = ref.watch(settingsProvider).logoUrl;
@@ -550,32 +536,12 @@ class _StaffGrid extends StatelessWidget {
                 style: GoogleFonts.syne(
                     fontSize: 12, color: C.textMuted),
               ),
-              const SizedBox(height: 28),
-              // Visible owner access button — only shown when no staff exist
-              GestureDetector(
-                onTap: onOwnerAccess,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 24, vertical: 14),
-                  decoration: BoxDecoration(
-                    color: C.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                        color: C.primary.withValues(alpha: 0.35), width: 1.5),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.shield_outlined,
-                          color: C.primary, size: 18),
-                      const SizedBox(width: 10),
-                      Text('Owner Access',
-                          style: GoogleFonts.syne(
-                              fontSize: 14, fontWeight: FontWeight.w700,
-                              color: C.primary)),
-                    ],
-                  ),
-                ),
+              const SizedBox(height: 12),
+              // Hint — no visible owner button; long-press logo top-right
+              Text(
+                'Long-press the logo to sign in as owner',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.syne(fontSize: 11, color: C.textDim),
               ),
             ],
           ),
@@ -657,52 +623,32 @@ class _StaffCardState extends State<_StaffCard>
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: C.border, width: 1),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Avatar
-              Container(
-                width: 52, height: 52,
+          child: Tooltip(
+            message: '${widget.member.displayName}\n${widget.member.roleLabel}',
+            preferBelow: true,
+            triggerMode: TooltipTriggerMode.longPress,
+            decoration: BoxDecoration(
+              color: C.bgCard,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: C.border),
+            ),
+            textStyle: GoogleFonts.syne(
+                fontSize: 12, fontWeight: FontWeight.w600, color: C.white),
+            child: Center(
+              child: Container(
+                width: 56, height: 56,
                 decoration: BoxDecoration(
                   color: color.withValues(alpha: 0.15),
                   shape: BoxShape.circle,
                   border: Border.all(
-                      color: color.withValues(alpha: 0.35), width: 1.5),
+                      color: color.withValues(alpha: 0.5), width: 2),
                 ),
                 child: Center(
                   child: Text(initials, style: GoogleFonts.syne(
-                      fontSize: 18, fontWeight: FontWeight.w800, color: color)),
+                      fontSize: 20, fontWeight: FontWeight.w900, color: color)),
                 ),
               ),
-              const SizedBox(height: 10),
-              // Name
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                child: Text(
-                  widget.member.displayName.split(' ').first,
-                  style: GoogleFonts.syne(
-                      fontSize: 13, fontWeight: FontWeight.w700, color: C.white),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                ),
-              ),
-              const SizedBox(height: 4),
-              // Role chip
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  widget.member.roleLabel,
-                  style: GoogleFonts.syne(
-                      fontSize: 9, fontWeight: FontWeight.w700,
-                      color: color.withValues(alpha: 0.85)),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
