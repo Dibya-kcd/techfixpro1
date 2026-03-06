@@ -26,7 +26,7 @@ jobs:
         run: flutter pub get
         
       - name: Build Web
-        run: flutter build web --release --base-href "/TechFixPro_Flutter_v4/"
+        run: flutter build web --release --base-href "/techfixpro1/"
         
       - name: Fix 404 and Jekyll
         run: |
