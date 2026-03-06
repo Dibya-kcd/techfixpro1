@@ -1,10 +1,13 @@
-import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../theme/t.dart';
+// dart:io only on non-web
+import 'dart:io' if (dart.library.html) 'dart:html' as native_io;
 
 // ── Money formatter ───────────────────────────────────────────
 String fmtMoney(double n) => '₹${n.toStringAsFixed(0).replaceAllMapped(
@@ -316,90 +319,92 @@ class PBtn extends StatelessWidget {
 //  PHOTO PICKER WIDGET — Camera + Gallery with real image_picker
 // ═══════════════════════════════════════════════════════════════
 
-/// Callback returns the file path string of the newly picked image
-typedef OnPhotoPicked = void Function(String path);
+/// Callback returns raw bytes — works on web and mobile
+typedef OnPhotoPicked = void Function(Uint8List bytes);
 
-/// Shows bottom sheet to pick camera or gallery, returns file path
-Future<String?> pickPhoto(BuildContext context) async {
-  String? result;
-  await showModalBottomSheet<void>(
-    context: context,
-    backgroundColor: Colors.transparent,
-    builder: (ctx) => Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
-      decoration: BoxDecoration(
-        color: C.bgCard,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: C.border),
-      ),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        // Handle bar
-        Container(margin: const EdgeInsets.only(top: 12),
-            width: 40, height: 4,
-            decoration: BoxDecoration(color: C.border,
-                borderRadius: BorderRadius.circular(99))),
-        const SizedBox(height: 16),
-        Text('Add Photo', style: GoogleFonts.syne(
-            fontWeight: FontWeight.w800, fontSize: 17, color: C.white)),
-        const SizedBox(height: 6),
-        Text('Choose a source', style: GoogleFonts.syne(
-            fontSize: 13, color: C.textMuted)),
-        const SizedBox(height: 20),
-        // Camera option
-        _PhotoOption(
-          icon: Icons.camera_alt_rounded,
-          iconColor: C.primary,
-          label: 'Take Photo',
-          sub: 'Open camera now',
-          onTap: () async {
-            Navigator.of(ctx).pop();
-            final img = await ImagePicker().pickImage(
-              source: ImageSource.camera,
-              imageQuality: 85,
-              maxWidth: 1920,
-              maxHeight: 1920,
-            );
-            result = img?.path;
-          },
+/// Shows bottom sheet (mobile) or file picker (web), returns raw bytes.
+/// Returns null if user cancels.
+Future<Uint8List?> pickPhoto(BuildContext context) async {
+  XFile? file;
+
+  if (kIsWeb) {
+    // Web: no camera access — open file picker directly
+    file = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+      maxWidth: 1920,
+      maxHeight: 1920,
+    );
+  } else {
+    // Mobile: show camera / gallery bottom sheet
+    ImageSource? source;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        decoration: BoxDecoration(
+          color: C.bgCard,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: C.border),
         ),
-        const Divider(color: C.border, height: 1, indent: 16, endIndent: 16),
-        // Gallery option
-        _PhotoOption(
-          icon: Icons.photo_library_rounded,
-          iconColor: C.accent,
-          label: 'Choose from Gallery',
-          sub: 'Select an existing photo',
-          onTap: () async {
-            Navigator.of(ctx).pop();
-            final img = await ImagePicker().pickImage(
-              source: ImageSource.gallery,
-              imageQuality: 85,
-              maxWidth: 1920,
-              maxHeight: 1920,
-            );
-            result = img?.path;
-          },
-        ),
-        const SizedBox(height: 8),
-        // Cancel
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          child: SizedBox(width: double.infinity,
-            child: TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(margin: const EdgeInsets.only(top: 12),
+              width: 40, height: 4,
+              decoration: BoxDecoration(color: C.border,
+                  borderRadius: BorderRadius.circular(99))),
+          const SizedBox(height: 16),
+          Text('Add Photo', style: GoogleFonts.syne(
+              fontWeight: FontWeight.w800, fontSize: 17, color: C.white)),
+          const SizedBox(height: 6),
+          Text('Choose a source', style: GoogleFonts.syne(
+              fontSize: 13, color: C.textMuted)),
+          const SizedBox(height: 20),
+          _PhotoOption(
+            icon: Icons.camera_alt_rounded,
+            iconColor: C.primary,
+            label: 'Take Photo',
+            sub: 'Open camera now',
+            onTap: () { Navigator.of(ctx).pop(); source = ImageSource.camera; },
+          ),
+          const Divider(color: C.border, height: 1, indent: 16, endIndent: 16),
+          _PhotoOption(
+            icon: Icons.photo_library_rounded,
+            iconColor: C.accent,
+            label: 'Choose from Gallery',
+            sub: 'Select an existing photo',
+            onTap: () { Navigator.of(ctx).pop(); source = ImageSource.gallery; },
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: SizedBox(width: double.infinity,
+              child: TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                child: Text('Cancel', style: GoogleFonts.syne(
+                    fontWeight: FontWeight.w700, fontSize: 14, color: C.textMuted)),
               ),
-              child: Text('Cancel', style: GoogleFonts.syne(
-                  fontWeight: FontWeight.w700, fontSize: 14, color: C.textMuted)),
             ),
           ),
-        ),
-      ]),
-    ),
-  );
-  return result;
+        ]),
+      ),
+    );
+    if (source == null) return null;
+    file = await ImagePicker().pickImage(
+      source: source!,
+      imageQuality: 85,
+      maxWidth: 1920,
+      maxHeight: 1920,
+    );
+  }
+
+  if (file == null) return null;
+  // readAsBytes() works on both web and mobile
+  return await file.readAsBytes();
 }
 
 class _PhotoOption extends StatelessWidget {
@@ -447,7 +452,7 @@ class PhotoRow extends StatelessWidget {
   final String label;
 
   /// Nullable — pass null while uploading to disable add/delete
-  final Function(String path)? onPhotoAdded;
+  final Function(Uint8List bytes)? onPhotoAdded;
   final Function(int index)? onPhotoRemoved;
   final bool canDelete;
 
@@ -525,8 +530,8 @@ class PhotoRow extends StatelessWidget {
             onTap: _locked || onPhotoAdded == null
                 ? null
                 : () async {
-                    final path = await pickPhoto(context);
-                    if (path != null) onPhotoAdded!(path);
+                    final bytes = await pickPhoto(context);
+                    if (bytes != null) onPhotoAdded!(bytes);
                   },
             child: Container(
               width: 80, height: 80, margin: const EdgeInsets.only(right: 8),
@@ -577,8 +582,10 @@ class _PhotoTile extends StatelessWidget {
     this.onDelete,
   });
 
+  // On web, only https:// URLs are valid — local paths never appear
   bool get _isEmoji => !path.startsWith('/') && !path.startsWith('file:') && !path.startsWith('http');
   bool get _isUrl   => path.startsWith('http') || path.startsWith('https');
+  bool get _isLocal => !kIsWeb && (path.startsWith('/') || path.startsWith('file:'));
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -607,10 +614,15 @@ class _PhotoTile extends StatelessWidget {
                             child: Icon(Icons.broken_image_outlined,
                                 color: C.textMuted, size: 30)),
                       )
-                    : Image.file(File(path), fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => const Center(
-                            child: Icon(Icons.broken_image_outlined,
-                                color: C.textMuted, size: 30))),
+                    : _isLocal
+                        // ignore: avoid_dynamic_calls
+                        ? Image.file(native_io.File(path), fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Center(
+                                child: Icon(Icons.broken_image_outlined,
+                                    color: C.textMuted, size: 30)))
+                        : const Center(
+                            child: Icon(Icons.image_not_supported_outlined,
+                                color: C.textMuted, size: 30)),
           ),
         ),
         // Delete ×
@@ -654,7 +666,8 @@ class _PhotoTile extends StatelessWidget {
 
   void _openGallery(BuildContext context) {
     final real = allPhotos
-        .where((p) => p.startsWith('/') || p.startsWith('file:') || p.startsWith('http'))
+        .where((p) => p.startsWith('http') ||
+            (!kIsWeb && (p.startsWith('/') || p.startsWith('file:'))))
         .toList();
     final start = real.indexOf(path).clamp(0, (real.length - 1).clamp(0, 9999));
     Navigator.of(context).push(PageRouteBuilder(
@@ -725,8 +738,11 @@ class _PhotoGalleryState extends State<_PhotoGallery> {
                       placeholder: (_, __) => const Center(
                           child: CircularProgressIndicator(color: C.primary)),
                       errorWidget: (_, __, ___) => _broken())
-                  : Image.file(File(src), fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => _broken()),
+                  : (!kIsWeb && (src.startsWith('/') || src.startsWith('file:')))
+                      // ignore: avoid_dynamic_calls
+                      ? Image.file(native_io.File(src), fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) => _broken())
+                      : _broken(),
             ),
           );
         },

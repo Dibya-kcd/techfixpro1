@@ -1355,6 +1355,38 @@ class _PhotosTabState extends ConsumerState<_PhotosTab> {
   double? _intakeProgress;
   double? _completionProgress;
 
+  // Called by PhotoRow with raw bytes (works on web + mobile)
+  Future<void> _addPhotoBytes(bool isIntake, Uint8List bytes) async {
+    setState(() => isIntake ? _intakeProgress = 0.0 : _completionProgress = 0.0);
+    try {
+      final folder = isIntake ? 'intake' : 'completion';
+      final url = await PhotoService.uploadBytes(
+        bytes,
+        'jobs/${widget.job.jobId}/$folder',
+        onProgress: (p) {
+          if (mounted) setState(() => isIntake ? _intakeProgress = p : _completionProgress = p);
+        },
+      );
+      if (url == null) { _err('Upload failed — please try again'); return; }
+
+      final newJob = isIntake
+          ? widget.job.copyWith(intakePhotos: [...widget.job.intakePhotos, url])
+          : widget.job.copyWith(completionPhotos: [...widget.job.completionPhotos, url]);
+
+      await FirebaseDatabase.instance.ref('jobs/${widget.job.jobId}').update({
+        isIntake ? 'intakePhotos' : 'completionPhotos':
+            isIntake ? newJob.intakePhotos : newJob.completionPhotos,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+      ref.read(jobsProvider.notifier).updateJob(newJob);
+    } catch (e) {
+      _err('Upload failed: $e');
+    } finally {
+      if (mounted) setState(() => isIntake ? _intakeProgress = null : _completionProgress = null);
+    }
+  }
+
+  // Legacy path-based upload — mobile only (kept for backward compat)
   Future<void> _addPhoto(bool isIntake, String path) async {
     setState(() => isIntake ? _intakeProgress = 0.0 : _completionProgress = 0.0);
     try {
@@ -1446,7 +1478,7 @@ class _PhotosTabState extends ConsumerState<_PhotosTab> {
             photos: job.intakePhotos,
             label: 'Device condition at intake',
             uploadProgress: _intakeProgress,
-            onPhotoAdded: iLocked ? null : (path) => _addPhoto(true, path),
+            onPhotoAdded: iLocked ? null : (bytes) => _addPhotoBytes(true, bytes),
             onPhotoRemoved: iLocked ? null : (idx) => _removePhoto(true, idx),
           ),
         ])),
@@ -1478,7 +1510,7 @@ class _PhotosTabState extends ConsumerState<_PhotosTab> {
             photos: job.completionPhotos,
             label: 'Device after repair',
             uploadProgress: _completionProgress,
-            onPhotoAdded: cLocked ? null : (path) => _addPhoto(false, path),
+            onPhotoAdded: cLocked ? null : (bytes) => _addPhotoBytes(false, bytes),
             onPhotoRemoved: cLocked ? null : (idx) => _removePhoto(false, idx),
           ),
           if (job.completionPhotos.isEmpty) ...[
