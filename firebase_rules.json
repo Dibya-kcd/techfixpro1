@@ -1,0 +1,189 @@
+{
+  "rules": {
+
+    "pin_sessions": {
+      "$sessionUid": {
+        ".read":  "auth != null && auth.uid == $sessionUid",
+        ".write": "auth != null && auth.uid == $sessionUid"
+      }
+    },
+
+    "shops": {
+      "$shopId": {
+        ".read": "auth != null && (root.child('users/' + auth.uid + '/shopId').val() == $shopId || root.child('pin_sessions/' + auth.uid + '/shopId').val() == $shopId) && (root.child('users/' + auth.uid + '/isActive').val() == true || root.child('pin_sessions/' + auth.uid + '/shopId').val() == $shopId)",
+
+        ".write": "auth != null && ( (root.child('users/' + auth.uid + '/isActive').val() == true && root.child('users/' + auth.uid + '/shopId').val() == $shopId && (root.child('users/' + auth.uid + '/isOwner').val() == true || root.child('users/' + auth.uid + '/role').val() == 'admin') && (!data.exists() || data.child('isActive').val() == true)) || (!data.exists() && root.child('registrations/' + auth.uid).exists()) )"
+      }
+    },
+
+    "registrations": {
+      "$uid": {
+        ".read":  "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid && !data.exists()"
+      }
+    },
+
+    "billing": {
+      "$shopId": {
+        ".read":  "auth != null && root.child('users/' + auth.uid + '/shopId').val() == $shopId && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/isOwner').val() == true)",
+        ".write": false
+      }
+    },
+
+    "users": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$uid": {
+        ".read":  "auth != null && (auth.uid == $uid || (root.child('users/' + auth.uid + '/shopId').val() == root.child('users/' + $uid + '/shopId').val() && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager')))",
+
+        // Three write clauses:
+        // 1. Admin/manager writing another user in same shop (not the owner record)
+        // 2. Any user creating their own record for the first time (!data.exists())
+        // 3. FIX: Any active user writing to their OWN existing record (auth.uid == $uid)
+        //    Previously missing — caused permission_denied on lastLoginAt write for ALL
+        //    roles: technicians/reception (not admin/manager so clause 1 fails) and
+        //    isOwner=true admins (isOwner!=true guard makes clause 1 fail for them too).
+        ".write": "auth != null && ( (root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager') && root.child('users/' + auth.uid + '/shopId').val() == root.child('users/' + $uid + '/shopId').val() && root.child('users/' + $uid + '/isOwner').val() != true) || (!data.exists() && auth.uid == $uid) || (auth.uid == $uid && root.child('users/' + auth.uid + '/isActive').val() == true) )",
+
+        // lastLoginAt: dedicated child rule — any authenticated user can write their
+        // own login timestamp. Narrower than the parent for security, explicit for clarity.
+        "lastLoginAt": {
+          ".write": "auth != null && auth.uid == $uid"
+        },
+
+        // FIX (CRITICAL #2): Added 'manager' to role child rule.
+        // Previously only 'admin' was allowed, which blocked TechFormPage batch writes
+        // for managers (the role field is written atomically with the full user record,
+        // and the child rule overrides the parent for that specific field path).
+        "role": {
+          // Admin/manager can change another (non-owner) user's role in same shop.
+          // Self-write (auth.uid==$uid) also allowed — covers diagnostic same-value
+          // writes and batch writes from TechFormPage that include the role field.
+          // Note: a user cannot escalate own role since they already have it.
+          ".write": "auth != null && ( (root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager') && root.child('users/' + $uid + '/isOwner').val() != true && root.child('users/' + auth.uid + '/shopId').val() == root.child('users/' + $uid + '/shopId').val()) || (auth.uid == $uid && root.child('users/' + auth.uid + '/isActive').val() == true) )"
+        },
+        "shopId": {
+          ".write": "auth != null && root.child('users/' + auth.uid + '/isOwner').val() == true && root.child('users/' + auth.uid + '/isActive').val() == true"
+        },
+        "isOwner": {
+          ".write": "auth != null && !data.exists()"
+        },
+        "pin": {
+          ".read":  "auth != null && (auth.uid == $uid || root.child('users/' + auth.uid + '/role').val() == 'admin' || (root.child('pin_sessions/' + auth.uid + '/staffUid').val() == $uid && root.child('users/' + $uid + '/shopId').val() == root.child('pin_sessions/' + auth.uid + '/shopId').val()))",
+          ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (auth.uid == $uid || (root.child('users/' + auth.uid + '/role').val() == 'admin' && root.child('users/' + $uid + '/isOwner').val() != true && root.child('users/' + auth.uid + '/shopId').val() == root.child('users/' + $uid + '/shopId').val()))"
+        },
+        "pin_hash": {
+          ".read":  "auth != null && (auth.uid == $uid || root.child('users/' + auth.uid + '/role').val() == 'admin')",
+          ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (auth.uid == $uid || (root.child('users/' + auth.uid + '/role').val() == 'admin' && root.child('users/' + $uid + '/isOwner').val() != true && root.child('users/' + auth.uid + '/shopId').val() == root.child('users/' + $uid + '/shopId').val()))"
+        }
+      },
+
+      ".indexOn": ["shopId", "role", "isActive", "isOwner"]
+    },
+
+    "technicians": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$techId": {
+        ".read":  "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()",
+        ".write": "auth != null && ( (root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))) || (root.child('users/' + auth.uid + '/isActive').val() == true && auth.uid == $techId) || (auth.uid == $techId && !data.exists() && root.child('registrations/' + auth.uid).exists()) )"
+      },
+
+      ".indexOn": ["shopId", "isActive"]
+    },
+
+    "customers": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$custId": {
+        ".read":  "auth != null && (data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val() || data.child('shopId').val() == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+        ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager' || root.child('users/' + auth.uid + '/role').val() == 'reception') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))"
+      },
+
+      ".indexOn": ["shopId", "phone", "tier", "isVip", "isBlacklisted"]
+    },
+
+    "jobs": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$jobId": {
+        ".read":  "auth != null && (data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val() || data.child('shopId').val() == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+        ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager' || root.child('users/' + auth.uid + '/role').val() == 'reception' || root.child('users/' + auth.uid + '/role').val() == 'technician') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))"
+      },
+
+      ".indexOn": ["shopId", "status", "technicianId", "customerId", "priority"]
+    },
+
+    "products": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$prodId": {
+        ".read":  "auth != null && (data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val() || data.child('shopId').val() == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+        ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))"
+      },
+
+      ".indexOn": ["shopId", "category", "brand", "isActive"]
+    },
+
+    "invoices": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$invoiceId": {
+        ".read":  "auth != null && (data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val() || data.child('shopId').val() == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+        ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager' || root.child('users/' + auth.uid + '/role').val() == 'reception') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))"
+      },
+
+      ".indexOn": ["shopId", "paymentStatus", "customerId", "jobId"]
+    },
+
+    "transactions": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && (query.equalTo == root.child('users/' + auth.uid + '/shopId').val() || query.equalTo == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+
+      "$txId": {
+        ".read":  "auth != null && (data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val() || data.child('shopId').val() == root.child('pin_sessions/' + auth.uid + '/shopId').val())",
+        ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager' || root.child('users/' + auth.uid + '/role').val() == 'reception') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))"
+      },
+
+      ".indexOn": ["shopId", "type", "time"]
+    },
+
+    "stock_history": {
+      ".read": "auth != null && query.orderByChild == 'shopId' && query.equalTo == root.child('users/' + auth.uid + '/shopId').val()",
+
+      "$histId": {
+        ".read":  "auth != null && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()",
+        ".write": "auth != null && root.child('users/' + auth.uid + '/isActive').val() == true && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager' || root.child('users/' + auth.uid + '/role').val() == 'reception') && ((data.exists() && data.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()) || (!data.exists() && newData.child('shopId').val() == root.child('users/' + auth.uid + '/shopId').val()))"
+      },
+
+      ".indexOn": ["shopId", "productId", "type", "time"]
+    },
+
+    // FIX (CRITICAL #3): Separated diagnostics/$uid (own user record) from
+    // diagnostics/seed/$key (DemoDataPage ping path).
+    // Previously the rule structure was diagnostics/$uid/seed/$key with
+    // auth.uid == $uid, which made DemoDataPage writes evaluate as
+    // auth.uid == "seed" (the literal string) — always false.
+    "diagnostics": {
+      "$uid": {
+        ".read":  "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid"
+      },
+      "seed": {
+        "$seedKey": {
+          ".write": "auth != null"
+        }
+      }
+    },
+
+    "audit_logs": {
+      "$shopId": {
+        ".read":  "auth != null && root.child('users/' + auth.uid + '/shopId').val() == $shopId && (root.child('users/' + auth.uid + '/role').val() == 'admin' || root.child('users/' + auth.uid + '/role').val() == 'manager') && root.child('users/' + auth.uid + '/isActive').val() == true",
+        "$logId": {
+          ".write": "auth != null && root.child('users/' + auth.uid + '/shopId').val() == $shopId && root.child('users/' + auth.uid + '/isActive').val() == true"
+        }
+      },
+      ".indexOn": ["shopId", "time", "role"]
+    }
+
+  }
+}
