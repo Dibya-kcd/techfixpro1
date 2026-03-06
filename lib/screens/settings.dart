@@ -12,6 +12,7 @@ import '../data/active_session.dart';
 import '../models/m.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
+import '../data/photo_service.dart';
 
 Future<void> _shopSave(BuildContext context, WidgetRef ref,
     Future<void> Function() fn, {String successMsg = '✅ Saved'}) async {
@@ -459,18 +460,21 @@ class ShopProfilePage extends ConsumerStatefulWidget {
 
 class _ShopProfileState extends ConsumerState<ShopProfilePage> {
   late final TextEditingController _shopName, _owner, _phone, _email, _address, _gst;
-  Uint8List? _logoBytes; // logo picked by user (not yet saved to Firebase)
+  String? _existingLogoUrl;  // already-uploaded URL from Firebase
+  Uint8List? _logoBytes;      // newly picked bytes (not yet uploaded)
+  bool _uploadingLogo = false;
 
   @override
   void initState() {
     super.initState();
     final s = ref.read(settingsProvider);
-    _shopName = TextEditingController(text: s.shopName);
-    _owner    = TextEditingController(text: s.ownerName);
-    _phone    = TextEditingController(text: s.phone);
-    _email    = TextEditingController(text: s.email);
-    _address  = TextEditingController(text: s.address);
-    _gst      = TextEditingController(text: s.gstNumber);
+    _shopName        = TextEditingController(text: s.shopName);
+    _owner           = TextEditingController(text: s.ownerName);
+    _phone           = TextEditingController(text: s.phone);
+    _email           = TextEditingController(text: s.email);
+    _address         = TextEditingController(text: s.address);
+    _gst             = TextEditingController(text: s.gstNumber);
+    _existingLogoUrl = s.logoUrl.isNotEmpty ? s.logoUrl : null;
   }
 
   @override
@@ -482,6 +486,31 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
   }
 
   Future<void> _save() async {
+    final session = ref.read(currentUserProvider).asData?.value;
+    if (session == null || session.shopId.isEmpty) return;
+
+    String logoUrl = _existingLogoUrl ?? '';
+
+    // Upload new logo bytes if user picked one
+    if (_logoBytes != null) {
+      setState(() => _uploadingLogo = true);
+      try {
+        final uploaded = await PhotoService.uploadBytes(
+          _logoBytes!,
+          'logos/${session.shopId}',
+        );
+        if (uploaded != null) {
+          logoUrl = uploaded;
+          setState(() {
+            _existingLogoUrl = uploaded;
+            _logoBytes = null;   // clear preview — now stored in Firebase
+          });
+        }
+      } finally {
+        if (mounted) setState(() => _uploadingLogo = false);
+      }
+    }
+
     ref.read(settingsProvider.notifier).update(
         ref.read(settingsProvider).copyWith(
           shopName: _shopName.text.trim(),
@@ -490,52 +519,102 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
           email: _email.text.trim(),
           address: _address.text.trim(),
           gstNumber: _gst.text.trim(),
+          logoUrl: logoUrl,
         ));
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
     await _shopSave(context, ref,
         () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId));
   }
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Shop Profile', subtitle: 'Business info shown on invoices',
     children: [
-      // Logo picker
+      // ── Logo picker ────────────────────────────────────────────
       Center(child: Column(children: [
-        GestureDetector(
-          onTap: () async {
-            final path = await pickPhoto(context);
-            if (path != null) setState(() => _logoBytes = path);
-          },
-        child: Container(
-          width: 90, height: 90,
-          decoration: BoxDecoration(
-              color: C.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: C.primary.withValues(alpha: 0.5), width: 2),
+        Stack(alignment: Alignment.bottomRight, children: [
+          GestureDetector(
+            onTap: _uploadingLogo ? null : () async {
+              final bytes = await pickPhoto(context);
+              if (bytes != null) setState(() => _logoBytes = bytes);
+            },
+            child: Container(
+              width: 96, height: 96,
+              decoration: BoxDecoration(
+                color: C.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: C.primary.withValues(alpha: 0.5), width: 2),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: _buildLogoPreview(),
+              ),
             ),
-            child: _logoBytes != null
-                ? ClipRRect(borderRadius: BorderRadius.circular(18),
-                    child: Image.memory(_logoBytes!, fit: BoxFit.cover))
-                : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    const Icon(Icons.store_outlined, color: C.primary, size: 34),
-                    const SizedBox(height: 4),
-                    Text('Shop Logo', style: GoogleFonts.syne(
-                        fontSize: 10, color: C.textMuted)),
-                  ]),
           ),
-        ),
+          // Edit badge
+          if (!_uploadingLogo)
+            Positioned(
+              bottom: 2, right: 2,
+              child: Container(
+                width: 24, height: 24,
+                decoration: BoxDecoration(
+                    color: C.primary, shape: BoxShape.circle,
+                    border: Border.all(color: C.bgCard, width: 2)),
+                child: const Icon(Icons.edit, color: Colors.white, size: 12),
+              ),
+            ),
+        ]),
         const SizedBox(height: 8),
-        TextButton.icon(
-          onPressed: () async {
-            final path = await pickPhoto(context);
-            if (path != null) setState(() => _logoBytes = path);
-          },
-          icon: const Icon(Icons.upload_outlined, size: 16, color: C.primary),
-          label: Text('Upload Logo', style: GoogleFonts.syne(
-              fontSize: 13, color: C.primary, fontWeight: FontWeight.w700)),
-        ),
+        if (_uploadingLogo)
+          const SizedBox(
+            width: 18, height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2, color: C.primary),
+          )
+        else
+          TextButton.icon(
+            onPressed: () async {
+              final bytes = await pickPhoto(context);
+              if (bytes != null) setState(() => _logoBytes = bytes);
+            },
+            icon: const Icon(Icons.upload_outlined, size: 16, color: C.primary),
+            label: Text(
+              _existingLogoUrl != null ? 'Change Logo' : 'Upload Logo',
+              style: GoogleFonts.syne(
+                  fontSize: 13, color: C.primary, fontWeight: FontWeight.w700)),
+          ),
+        if (_logoBytes != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('Unsaved — tap Save to upload',
+                style: GoogleFonts.syne(fontSize: 11, color: C.yellow)),
+          ),
       ])),
       const SizedBox(height: 8),
       const SLabel('BUSINESS DETAILS'),
@@ -648,6 +727,33 @@ class _DemoDataState extends ConsumerState<DemoDataPage> {
     }
   }
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Demo Data Tools',
@@ -758,6 +864,33 @@ class _InvoicePageState extends ConsumerState<InvoicePage> {
         () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId),
         successMsg: '✅ Invoice settings saved');
   }
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -893,6 +1026,33 @@ class _TaxPageState extends ConsumerState<TaxPage> {
         successMsg: '✅ Tax saved — all active job totals updated');
   }
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Tax & GST', subtitle: 'Applied to all repair jobs and POS sales',
@@ -1002,6 +1162,33 @@ class _PayMethodsState extends ConsumerState<PaymentMethodsPage> {
     await _shopSave(context, ref,
         () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId));
   }
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -1324,6 +1511,33 @@ class _StaffFormState extends ConsumerState<StaffFormPage> {
         backgroundColor: bg, behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 4)));
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: _isEdit ? 'Edit Staff' : 'New Staff',
@@ -1481,6 +1695,33 @@ class _WorkflowState extends ConsumerState<WorkflowPage> {
         () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId));
   }
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Repair Workflow', subtitle: '${_stages.length} customizable stages',
@@ -1606,6 +1847,33 @@ class _WarrantyPageState extends ConsumerState<WarrantyPage> {
         () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId),
         successMsg: '✅ Warranty saved — $summary');
   }
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -2920,6 +3188,33 @@ class _WhatsappPageState extends State<WhatsappPage> {
         'Please collect at your earliest convenience.'),
   ];
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'WhatsApp Business', subtitle: 'Send automated customer messages',
@@ -3037,6 +3332,33 @@ class _SmsPageState extends State<SmsPage> {
   final _sender  = TextEditingController(text: 'TECHFX');
   bool _onPickup = true, _onUpdate = false;
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'SMS Gateway', subtitle: 'Text message notifications to customers',
@@ -3107,6 +3429,33 @@ class _PushNotifState extends State<PushNotifPage> {
     'Warranty Expiring Soon': false,
   };
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Push Notifications', subtitle: 'Alerts sent to this device',
@@ -3140,6 +3489,33 @@ class _PushNotifState extends State<PushNotifPage> {
 // ═════════════════════════════════════════════════════════════
 class EmailPage extends StatelessWidget {
   const EmailPage({super.key});
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Email Settings', subtitle: 'SMTP configuration for email sending',
@@ -3189,6 +3565,33 @@ class _PaymentGatewayState extends State<PaymentGatewayPage> {
     ('paytm',    'Paytm',    '📱', 'Paytm QR, wallet & UPI payments'),
     ('instamojo','Instamojo','⚡', 'Simple Indian payment collection'),
   ];
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -3245,6 +3648,33 @@ class _PaymentGatewayState extends State<PaymentGatewayPage> {
 // ═════════════════════════════════════════════════════════════
 class AccountingPage extends StatelessWidget {
   const AccountingPage({super.key});
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Accounting Export', subtitle: 'Sync or export to accounting software',
@@ -3303,6 +3733,33 @@ class _SupplierState extends State<SupplierPage> {
   final _apiKey = TextEditingController();
   bool _autoReorder = false, _emailPO = true;
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Supplier Integration', subtitle: 'Auto-reorder low stock parts',
@@ -3342,6 +3799,33 @@ class AiPage extends StatefulWidget {
 class _AiPageState extends State<AiPage> {
   final _apiKey = TextEditingController();
   bool _diagnosis = true, _pricing = false, _parts = false;
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -3408,6 +3892,33 @@ class _AppLockState extends State<AppLockPage> {
   final _pin = TextEditingController();
   final _confirm = TextEditingController();
   bool _pinMismatch = false;
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -3499,6 +4010,33 @@ class AuditLogsPage extends StatelessWidget {
     ('2025-02-21 12:00', 'Suresh Kumar',  'Job JOB-2025-0038 status → Completed',  '🏁'),
   ];
 
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Audit Logs', subtitle: 'Complete activity trail',
@@ -3553,6 +4091,33 @@ class _BackupState extends State<BackupPage> {
   String _freq = 'Daily';
   String _location = 'Google Drive';
   bool _backing = false;
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(
@@ -3678,6 +4243,33 @@ class _ExportPageState extends State<ExportPage> {
     ('payments',  '💰', 'Payment Transactions',      'All payments received and pending'),
     ('finance',   '📊', 'Financial Summary Report', 'Revenue, costs, tax, profit summary'),
   ];
+
+  // Priority: newly-picked bytes → existing URL → placeholder
+  Widget _buildLogoPreview() {
+    if (_logoBytes != null) {
+      return Image.memory(_logoBytes!, fit: BoxFit.cover);
+    }
+    if (_existingLogoUrl != null && _existingLogoUrl!.isNotEmpty) {
+      return Image.network(
+        _existingLogoUrl!,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) =>
+            progress == null ? child : const Center(
+                child: CircularProgressIndicator(strokeWidth: 2, color: C.primary)),
+        errorBuilder: (_, __, ___) => _logoPlaceholder(),
+      );
+    }
+    return _logoPlaceholder();
+  }
+
+  Widget _logoPlaceholder() => Column(
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      const Icon(Icons.store_outlined, color: C.primary, size: 34),
+      const SizedBox(height: 4),
+      Text('Shop Logo', style: GoogleFonts.syne(fontSize: 10, color: C.textMuted)),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => _Page(

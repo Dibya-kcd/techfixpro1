@@ -12,6 +12,64 @@ import 'dart:io' if (dart.library.html) 'dart:html' as native_io;
 String fmtMoney(double n) => '₹${n.toStringAsFixed(0).replaceAllMapped(
     RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},')}';
 
+// ─────────────────────────────────────────────────────────────
+//  ShopLogo — displays the shop logo from Firebase Storage URL.
+//  Falls back to a store icon if no logo is set.
+//  Usage: ShopLogo(logoUrl: settings.logoUrl, size: 48)
+// ─────────────────────────────────────────────────────────────
+class ShopLogo extends StatelessWidget {
+  final String? logoUrl;
+  final double size;
+  final double borderRadius;
+  final Color? borderColor;
+
+  const ShopLogo({
+    super.key,
+    required this.logoUrl,
+    this.size = 48,
+    this.borderRadius = 12,
+    this.borderColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasLogo = logoUrl != null && logoUrl!.startsWith('http');
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: C.primary.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(borderRadius),
+        border: Border.all(
+          color: borderColor ?? C.primary.withValues(alpha: 0.3),
+          width: 1.5,
+        ),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(borderRadius - 1),
+        child: hasLogo
+            ? Image.network(
+                logoUrl!,
+                fit: BoxFit.cover,
+                loadingBuilder: (_, child, progress) =>
+                    progress == null ? child : _placeholder(),
+                errorBuilder: (_, __, ___) => _placeholder(),
+              )
+            : _placeholder(),
+      ),
+    );
+  }
+
+  Widget _placeholder() => Center(
+    child: Icon(
+      Icons.store_outlined,
+      color: C.primary,
+      size: size * 0.45,
+    ),
+  );
+}
+
+
 // ── Pill badge ────────────────────────────────────────────────
 class Pill extends StatelessWidget {
   final String text;
