@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -321,6 +322,177 @@ class _RootShellState extends ConsumerState<RootShell> {
     }
   }
 
+  // ── Logo long-press → owner re-authentication ──────────────────────────────
+  // Smart alternative to the 5-tap pattern on the lock screen.
+  // If already owner session: confirms with a toast. 
+  // If staff session: shows owner password dialog to re-claim owner mode.
+  void _onLogoLongPress() {
+    HapticFeedback.mediumImpact();
+    final active = ref.read(activeSessionProvider);
+
+    if (active == null || active.isOwner) {
+      // Already owner — show confirmation snackbar
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            active == null ? 'Not signed in' : '✅ You are the owner',
+            style: GoogleFonts.syne(fontWeight: FontWeight.w600),
+          ),
+          backgroundColor: C.primary,
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // Staff is active — show owner PIN/password dialog
+    _showOwnerReauthDialog();
+  }
+
+  void _showOwnerReauthDialog() {
+    final passwordCtrl = TextEditingController();
+    bool loading = false;
+    String? error;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: C.bgCard,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(children: [
+            Consumer(builder: (_, ref, __) {
+              final logoUrl = ref.watch(settingsProvider).logoUrl;
+              return ShopLogo(logoUrl: logoUrl.isNotEmpty ? logoUrl : null,
+                  size: 36, borderRadius: 10);
+            }),
+            const SizedBox(width: 12),
+            Expanded(child: Text('Owner Access',
+                style: GoogleFonts.syne(
+                    fontWeight: FontWeight.w800, fontSize: 17, color: C.white))),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Enter your password to switch to owner mode.',
+                style: GoogleFonts.syne(fontSize: 13, color: C.textMuted)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: passwordCtrl,
+              obscureText: true,
+              autofocus: true,
+              style: GoogleFonts.syne(color: C.white),
+              decoration: InputDecoration(
+                hintText: 'Password',
+                hintStyle: GoogleFonts.syne(color: C.textDim),
+                filled: true,
+                fillColor: C.bgElevated,
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none),
+                prefixIcon: const Icon(Icons.lock_outline, color: C.textDim),
+              ),
+              onSubmitted: (_) async {
+                if (loading) return;
+                setDlg(() { loading = true; error = null; });
+                try {
+                  final user = FirebaseAuth.instance.currentUser!;
+                  final cred = EmailAuthProvider.credential(
+                      email: user.email!, password: passwordCtrl.text);
+                  await user.reauthenticateWithCredential(cred);
+                  // ✅ Password correct — get owner details
+                  final snap = await FirebaseDatabase.instance
+                      .ref('users/${user.uid}').get();
+                  final d = snap.value as Map? ?? {};
+                  ref.read(activeSessionProvider.notifier).resumeAsOwner(
+                    uid: user.uid,
+                    displayName: (d['displayName'] as String?) ?? user.email!,
+                    role: (d['role'] as String?) ?? 'admin',
+                    shopId: (d['shopId'] as String?) ?? '',
+                  );
+                  HapticFeedback.lightImpact();
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('✅ Switched to owner mode',
+                          style: GoogleFonts.syne(fontWeight: FontWeight.w600)),
+                      backgroundColor: C.green,
+                      duration: const Duration(seconds: 2),
+                      behavior: SnackBarBehavior.floating,
+                    ));
+                  }
+                } on FirebaseAuthException {
+                  setDlg(() { error = 'Wrong password. Try again.'; loading = false; });
+                  HapticFeedback.heavyImpact();
+                } catch (e) {
+                  setDlg(() { error = 'Error: $e'; loading = false; });
+                }
+              },
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 10),
+              Text(error!, style: GoogleFonts.syne(
+                  fontSize: 12, color: C.red, fontWeight: FontWeight.w600)),
+            ],
+          ]),
+          actions: [
+            TextButton(
+              onPressed: loading ? null : () => Navigator.of(ctx).pop(),
+              child: Text('Cancel',
+                  style: GoogleFonts.syne(color: C.textMuted, fontWeight: FontWeight.w600)),
+            ),
+            ElevatedButton(
+              onPressed: loading ? null : () async {
+                setDlg(() { loading = true; error = null; });
+                try {
+                  final user = FirebaseAuth.instance.currentUser!;
+                  final cred = EmailAuthProvider.credential(
+                      email: user.email!, password: passwordCtrl.text);
+                  await user.reauthenticateWithCredential(cred);
+                  final snap = await FirebaseDatabase.instance
+                      .ref('users/${user.uid}').get();
+                  final d = snap.value as Map? ?? {};
+                  ref.read(activeSessionProvider.notifier).resumeAsOwner(
+                    uid: user.uid,
+                    displayName: (d['displayName'] as String?) ?? user.email!,
+                    role: (d['role'] as String?) ?? 'admin',
+                    shopId: (d['shopId'] as String?) ?? '',
+                  );
+                  HapticFeedback.lightImpact();
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('✅ Switched to owner mode',
+                          style: GoogleFonts.syne(fontWeight: FontWeight.w600)),
+                      backgroundColor: C.green,
+                      duration: const Duration(seconds: 2),
+                      behavior: SnackBarBehavior.floating,
+                    ));
+                  }
+                } on FirebaseAuthException {
+                  setDlg(() { error = 'Wrong password. Try again.'; loading = false; });
+                  HapticFeedback.heavyImpact();
+                } catch (e) {
+                  setDlg(() { error = 'Error: $e'; loading = false; });
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: C.primary,
+                  foregroundColor: C.bg,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              child: loading
+                  ? const SizedBox(width: 18, height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: C.bg))
+                  : Text('Confirm',
+                      style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final userAsync    = ref.watch(currentUserProvider);
@@ -382,17 +554,18 @@ class _RootShellState extends ConsumerState<RootShell> {
       appBar: AppBar(
         backgroundColor: C.bgElevated,
         title: Row(children: [
-          Container(
-            width: 32, height: 32,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  colors: [C.primary, C.primaryDark],
-                  begin: Alignment.topLeft, end: Alignment.bottomRight),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Center(
-              child: Text('T', style: GoogleFonts.syne(
-                  fontWeight: FontWeight.w900, fontSize: 18, color: C.bg)),
+          // Shop logo — long-press to switch to owner mode
+          GestureDetector(
+            onLongPress: _onLogoLongPress,
+            child: Consumer(
+              builder: (_, ref, __) {
+                final logoUrl = ref.watch(settingsProvider).logoUrl;
+                return ShopLogo(
+                  logoUrl: logoUrl.isNotEmpty ? logoUrl : null,
+                  size: 32,
+                  borderRadius: 8,
+                );
+              },
             ),
           ),
           const SizedBox(width: 10),

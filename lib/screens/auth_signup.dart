@@ -16,6 +16,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -134,7 +135,7 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
     _cooldownTimer?.cancel();
     _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (_resendCooldown <= 1) { t.cancel(); if (mounted) setState(() => _resendCooldown = 0); }
-      else { if (mounted) setState(() => _resendCooldown--); }
+      else { if (mounted) { setState(() => _resendCooldown--); } }
     });
   }
 

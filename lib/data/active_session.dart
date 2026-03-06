@@ -26,7 +26,6 @@
 //  7. Owner "Full sign out" → Firebase signOut → back to LoginScreen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 export 'package:flutter_riverpod/legacy.dart';
 
