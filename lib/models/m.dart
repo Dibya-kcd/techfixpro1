@@ -91,6 +91,7 @@ class StaffMember {
   final bool biometricEnabled;
   final String specialization;
   final String pin;
+  final String pinHash;
   final String lastLoginAt;
   final String createdAt;
   final String joinedAt;
@@ -110,6 +111,7 @@ class StaffMember {
     this.biometricEnabled = false,
     this.specialization = 'General',
     this.pin = '',
+    this.pinHash = '',
     this.lastLoginAt = '',
     required this.createdAt,
     this.joinedAt = '',
@@ -136,6 +138,7 @@ class StaffMember {
     String? uid, String? shopId, String? displayName, String? email,
     String? phone, String? role, bool? isOwner, bool? isActive,
     bool? biometricEnabled, String? specialization, String? pin,
+    String? pinHash,
     String? lastLoginAt, String? createdAt, String? joinedAt,
     int? totalJobs, int? completedJobs, double? rating,
   }) => StaffMember(
@@ -150,6 +153,7 @@ class StaffMember {
     biometricEnabled: biometricEnabled ?? this.biometricEnabled,
     specialization: specialization ?? this.specialization,
     pin: pin ?? this.pin,
+    pinHash: pinHash ?? this.pinHash,
     lastLoginAt: lastLoginAt ?? this.lastLoginAt,
     createdAt: createdAt ?? this.createdAt,
     joinedAt: joinedAt ?? this.joinedAt,
@@ -170,6 +174,7 @@ class StaffMember {
     biometricEnabled: (data['biometricEnabled'] as bool?) ?? false,
     specialization: (data['specialization'] as String?) ?? 'General',
     pin: (data['pin'] as String?) ?? '',
+    pinHash: (data['pin_hash'] as String?) ?? '',
     lastLoginAt: (data['lastLoginAt'] as String?) ?? '',
     createdAt: (data['createdAt'] as String?) ?? '',
     joinedAt: (data['joinedAt'] as String?) ?? (data['createdAt'] as String?) ?? '',

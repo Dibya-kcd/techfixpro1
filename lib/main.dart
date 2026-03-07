@@ -73,6 +73,7 @@ class _AuthGate extends ConsumerStatefulWidget {
 class _AuthGateState extends ConsumerState<_AuthGate> {
   String _ownerUid    = '';
   String _ownerShopId = '';
+  bool   _loaded      = false;
   bool   _repairDone  = false;  // ensures repair dialog only shows once
 
   @override
@@ -94,7 +95,8 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         setState(() {
           _ownerUid    = uid;
           _ownerShopId = shopId;
-            });
+          _loaded      = true;
+        });
 
         // Trigger staff reload now that we have a real shopId.
         // reloadIfEmpty is a no-op if staff are already in state.
@@ -107,6 +109,7 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         _maybeRepair();
       }
     } catch (_) {
+      if (mounted) setState(() => _loaded = true);
     }
   }
 
@@ -171,6 +174,7 @@ class RootShell extends ConsumerStatefulWidget {
 class _RootShellState extends ConsumerState<RootShell> {
   int _idx = 0;
   bool _initialized = false;
+  String _initializedShopId = '';
   String? _cachedShopId;
 
   @override
@@ -196,7 +200,9 @@ class _RootShellState extends ConsumerState<RootShell> {
   ];
 
   Future<void> _initAppData(String shopId) async {
-    if (_initialized) return;
+    if (_initialized && _initializedShopId == shopId) return;
+    _initialized = true;
+    _initializedShopId = shopId;
     try {
       final db = FirebaseDatabase.instance;
       
@@ -231,49 +237,40 @@ class _RootShellState extends ConsumerState<RootShell> {
           .orderByChild('shopId')
           .equalTo(shopId)
           .onValue.listen((event) {
-        final techs = <Technician>[];
+        // Build StaffMember list directly from snapshot — includes owner + email
+        final staffList = <StaffMember>[];
         if (event.snapshot.exists) {
           for (final child in event.snapshot.children) {
-            final data = Map<String, dynamic>.from(child.value as Map);
-            final isOwner = (data['isOwner'] as bool?) ?? false;
-            if (isOwner) continue; // owner managed separately
-            techs.add(Technician(
-              techId: child.key!,
-              shopId: shopId,
-              name: (data['displayName'] as String?) ?? (data['name'] as String?) ?? '',
-              phone: (data['phone'] as String?) ?? '',
-              specialization: (data['specialization'] as String?) ?? 'General',
-              isActive: (data['isActive'] as bool?) ?? true,
-              totalJobs: (data['totalJobs'] as int?) ?? (data['jobs'] as int?) ?? 0,
-              rating: (data['rating'] as num?)?.toDouble() ?? 5.0,
-              pin: (data['pin'] as String?) ?? '',
-              joinedAt: (data['createdAt'] as String?) ?? (data['joinedAt'] as String?) ?? DateTime.now().toIso8601String(),
-              role: (data['role'] as String?) ?? 'technician',
+            final d = Map<String, dynamic>.from(child.value as Map);
+            staffList.add(StaffMember(
+              uid:              child.key!,
+              shopId:           shopId,
+              displayName:      (d['displayName'] as String?) ?? '',
+              email:            (d['email']       as String?) ?? '',
+              phone:            (d['phone']       as String?) ?? '',
+              role:             (d['role']        as String?) ?? 'technician',
+              isOwner:          (d['isOwner']     as bool?)   ?? false,
+              isActive:         (d['isActive']    as bool?)   ?? true,
+              biometricEnabled: (d['biometricEnabled'] as bool?) ?? false,
+              specialization:   (d['specialization'] as String?) ?? 'General',
+              pin:              (d['pin']         as String?) ?? '',
+              pinHash:          (d['pin_hash']    as String?) ?? '',
+              lastLoginAt:      (d['lastLoginAt'] as String?) ?? '',
+              createdAt:        (d['createdAt']   as String?) ?? '',
+              joinedAt:         (d['joinedAt']    as String?) ?? (d['createdAt'] as String?) ?? '',
+              totalJobs:        (d['totalJobs']   as int?)    ?? 0,
+              completedJobs:    (d['completedJobs'] as int?)  ?? 0,
+              rating:           (d['rating']      as num?)?.toDouble() ?? 5.0,
             ));
           }
         }
-        techs.sort((a, b) => a.name.compareTo(b.name));
-        // Update staffProvider — techsProvider derives automatically
-        final staff = techs.map((t) => StaffMember(
-          uid: t.techId,
-          shopId: t.shopId,
-          displayName: t.name,
-          email: '',
-          phone: t.phone,
-          role: t.role,
-          isOwner: false,
-          isActive: t.isActive,
-          biometricEnabled: false,
-          specialization: t.specialization,
-          pin: t.pin,
-          lastLoginAt: '',
-          createdAt: t.joinedAt,
-          joinedAt: t.joinedAt,
-          totalJobs: t.totalJobs,
-          completedJobs: t.completedJobs,
-          rating: t.rating,
-        )).toList();
-        ref.read(staffProvider.notifier).setAll(staff);
+        // Owner first, then alphabetical
+        staffList.sort((a, b) {
+          if (a.isOwner) return -1;
+          if (b.isOwner) return 1;
+          return a.displayName.compareTo(b.displayName);
+        });
+        ref.read(staffProvider.notifier).setAll(staffList);
       });
 
       // Real-time products listener
@@ -339,7 +336,7 @@ class _RootShellState extends ConsumerState<RootShell> {
         ref.read(customersProvider.notifier).setAll(customers);
       });
 
-      if (mounted) setState(() => _initialized = true);
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Error initializing app data: $e');
     }
@@ -351,13 +348,13 @@ class _RootShellState extends ConsumerState<RootShell> {
     final session      = userAsync.asData?.value;
     ref.watch(activeSessionProvider); // watched for rebuild; role consumed per-widget
 
-    // Kick off DB streams once (idempotent)
-    if (!_initialized) {
-      if (session != null && session.shopId.isNotEmpty) {
-        _initAppData(session.shopId);
-      } else if (_cachedShopId != null && _cachedShopId!.isNotEmpty) {
-        _initAppData(_cachedShopId!);
-      }
+    // Kick off DB streams — re-run if shopId changes (e.g. after lock screen PIN)
+    final activeSession = ref.watch(activeSessionProvider);
+    final effectiveShopId = (activeSession?.shopId.isNotEmpty == true)
+        ? activeSession!.shopId
+        : (session?.shopId.isNotEmpty == true ? session!.shopId : (_cachedShopId ?? ''));
+    if (effectiveShopId.isNotEmpty && _initializedShopId != effectiveShopId) {
+      _initAppData(effectiveShopId);
     }
 
     final jobs = ref.watch(jobsProvider);

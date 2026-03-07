@@ -153,6 +153,41 @@ class _AddRepairScreenState extends ConsumerState<AddRepairScreen> {
         ],
       });
 
+      // Immediately push new job + customer to local providers
+      // so the UI updates instantly (onValue listener may have slight delay)
+      final newJob = Job.fromMap({
+        'jobId': jobId, 'jobNumber': jobNumber, 'shopId': shopId,
+        'customerId': customerId, 'customerName': _custName.text.trim(),
+        'customerPhone': phone, 'brand': _brand.text.trim(),
+        'model': _model.text.trim(), 'imei': _imei.text.trim(),
+        'color': '', 'problem': _problem.text.trim(),
+        'notes': _notes.text.trim(), 'status': 'Checked In',
+        'previousStatus': null, 'holdReason': null, 'priority': _priority,
+        'technicianId': _techId, 'technicianName': _techName.isEmpty ? 'Unassigned' : _techName,
+        'laborCost': 0.0, 'partsCost': 0.0, 'discountAmount': 0.0,
+        'taxAmount': 0.0, 'totalAmount': 0.0, 'partsUsed': [],
+        'intakePhotos': [], 'completionPhotos': [],
+        'notificationSent': false, 'notificationChannel': '',
+        'reopenCount': 0, 'createdAt': now.toIso8601String(),
+        'updatedAt': now.toIso8601String(),
+        'timeline': [{'status': 'Checked In', 'time': now.toIso8601String(),
+            'by': active?.displayName ?? stream?.displayName ?? 'Staff',
+            'type': 'flow', 'note': 'Job created'}],
+        'subtotal': 0.0,
+      });
+      ref.read(jobsProvider.notifier).addJob(newJob);
+
+      // Also add new customer to local provider if we just created one
+      if (match == null && phone.isNotEmpty) {
+        ref.read(customersProvider.notifier).add(Customer(
+          customerId: customerId, name: _custName.text.trim(),
+          phone: phone, email: '', address: '', tier: 'Bronze',
+          isVip: false, isBlacklisted: false, points: 0,
+          repairsCount: 0, totalSpend: 0.0, shopId: shopId,
+          createdAt: now.toIso8601String(), updatedAt: now.toIso8601String(),
+        ));
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('✅ $jobNumber created',
