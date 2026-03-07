@@ -8,6 +8,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:http/http.dart' as http;
 import '../models/m.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 
@@ -66,9 +67,12 @@ class _InvState extends ConsumerState<InventoryScreen> {
     final search = ref.watch(searchInvProvider);
     final sessionAsync = ref.watch(currentUserProvider);
     final session = sessionAsync.asData?.value;
-    if (!_synced && !_syncing && session != null && session.shopId.isNotEmpty) {
+    final activeSession = ref.watch(activeSessionProvider);
+    final resolvedShopId = activeSession?.shopId.isNotEmpty == true
+        ? activeSession!.shopId : (session?.shopId ?? '');
+    if (!_synced && !_syncing && resolvedShopId.isNotEmpty) {
       _syncing = true;
-      _syncProductsFromFirebase(session.shopId).whenComplete(() {
+      _syncProductsFromFirebase(resolvedShopId).whenComplete(() {
         if (mounted) {
           setState(() {
             _synced = true;
@@ -399,8 +403,10 @@ class _InvState extends ConsumerState<InventoryScreen> {
     final notifier = ref.read(productsProvider.notifier);
     notifier.adjustQty(p.productId, delta);
     try {
-      final session = ref.read(currentUserProvider).asData?.value;
-      final shopId = session?.shopId ?? '';
+      final active = ref.read(activeSessionProvider);
+      final stream = ref.read(currentUserProvider).asData?.value;
+      final shopId  = (active?.shopId.isNotEmpty == true)
+          ? active!.shopId : (stream?.shopId ?? '');
       final db = FirebaseDatabase.instance;
       final newQty = (p.stockQty + delta).clamp(0, 99999);
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -423,7 +429,7 @@ class _InvState extends ConsumerState<InventoryScreen> {
         'delta': delta,
         'type': delta > 0 ? 'restock' : 'adjustment',
         'time': now,
-        'by': session?.displayName ?? 'Admin',
+        'by': active?.displayName ?? stream?.displayName ?? 'Admin',
       };
       
       await db.ref().update(batch);
@@ -538,8 +544,10 @@ class _ProdFormState extends ConsumerState<ProductFormScreen> {
     final id = existing?.productId ?? 'p${DateTime.now().millisecondsSinceEpoch}';
     final now = DateTime.now().toIso8601String();
     
-    final session = ref.read(currentUserProvider).asData?.value;
-    final shopId = session?.shopId ?? '';
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final shopId  = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
 
     final product = (existing ??
         Product(

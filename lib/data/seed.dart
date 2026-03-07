@@ -34,8 +34,9 @@ import 'package:flutter/foundation.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ShopOnboarding {
-  static Future<void> initialize({
-    required String shopId,
+  /// Returns the shopId that was used (generated internally if empty string passed).
+  static Future<String> initialize({
+    String shopId = '',        // pass '' to auto-generate (recommended)
     required String ownerUid,
     required String ownerName,
     required String ownerEmail,
@@ -47,12 +48,22 @@ class ShopOnboarding {
     final db = FirebaseDatabase.instance;
     final now = DateTime.now().toIso8601String();
 
+    // ── Generate shopId if not provided ──────────────────────────────────────
+    // SINGLE source of truth: generated here once, written to registrations/
+    // in Step 1, and reused by resumeSetup via registrations/ read.
+    // auth_signup must NOT generate its own shopId — pass '' and use return value.
+    final resolvedShopId = shopId.isNotEmpty
+        ? shopId
+        : db.ref('shops').push().key!;
+
     // ── STEP 1 — registrations/{uid} ─────────────────────────────────────────
     try {
       await db.ref('registrations/$ownerUid').set({
         'uid':          ownerUid,
-        'shopId':       shopId,
+        'shopId':       resolvedShopId,
         'email':        ownerEmail,
+        'ownerName':    ownerName,   // saved so resume can pre-fill shop doc
+        'phone':        ownerPhone,  // saved so resume can pre-fill shop doc
         'shopName':     shopName,
         'status':       plan == 'free' ? 'active' : 'trial',
         'plan':         plan,
@@ -60,43 +71,55 @@ class ShopOnboarding {
       });
       debugPrint('✅ Step 1 — registrations/$ownerUid written');
     } catch (e) {
-      debugPrint('❌ Step 1 failed (registrations): $e');
+      // Non-fatal — registrations/ is only a resume fallback
+      debugPrint('⚠️ Step 1 skipped (registrations) — $e');
+    }
+
+    // ── STEP 2a — users/{ownerUid} first ────────────────────────────────────
+    // MUST write users/ before shops/ — the shops write rule verifies
+    // users/{uid}.isActive + isOwner + resolvedShopId at evaluation time.
+    try {
+      await db.ref('users/$ownerUid').set({
+        'uid':              ownerUid,
+        'shopId':           resolvedShopId,
+        'displayName':      ownerName,
+        'email':            ownerEmail,
+        'role':             'admin',
+        'isOwner':          true,
+        'pin':              ownerPin,
+        'pin_hash':         '',
+        'phone':            ownerPhone,
+        'isActive':         true,
+        'biometricEnabled': false,
+        'specialization':   'Management',
+        'totalJobs':        0,
+        'completedJobs':    0,
+        'rating':           5.0,
+        'joinedAt':         now,
+        'lastLoginAt':      now,
+        'createdAt':        now,
+      });
+      debugPrint('✅ Step 2a — users/$ownerUid written');
+    } catch (e) {
+      debugPrint('❌ Step 2a failed (users): $e');
       rethrow;
     }
 
-    // ── STEP 2 — shops/{shopId} + users/{ownerUid} ───────────────────────────
+    // ── STEP 2b — shops/{resolvedShopId} ─────────────────────────────────────────────
     try {
-      await db.ref().update({
-        'shops/$shopId': _buildShopDoc(
-          shopId:    shopId,
-          shopName:  shopName,
-          ownerUid:  ownerUid,
-          ownerName: ownerName,
-          ownerEmail:ownerEmail,
-          ownerPhone:ownerPhone,
-          plan:      plan,
-          now:       now,
-        ),
-        'users/$ownerUid': {
-          'uid':              ownerUid,
-          'shopId':           shopId,
-          'displayName':      ownerName,
-          'email':            ownerEmail,
-          'role':             'admin',
-          'isOwner':          true,
-          'pin':              ownerPin,
-          'pin_hash':         '',
-          'phone':            ownerPhone,
-          'isActive':         true,
-          'biometricEnabled': false,
-          'specialization':   'Management',
-          'lastLoginAt':      now,
-          'createdAt':        now,
-        },
-      });
-      debugPrint('✅ Step 2 — shops/$shopId + users/$ownerUid written');
+      await db.ref('shops/$resolvedShopId').set(_buildShopDoc(
+        shopId:    resolvedShopId,
+        shopName:  shopName,
+        ownerUid:  ownerUid,
+        ownerName: ownerName,
+        ownerEmail:ownerEmail,
+        ownerPhone:ownerPhone,
+        plan:      plan,
+        now:       now,
+      ));
+      debugPrint('✅ Step 2b — shops/$resolvedShopId written');
     } catch (e) {
-      debugPrint('❌ Step 2 failed (shops/users): $e');
+      debugPrint('❌ Step 2b failed (shops): $e');
       rethrow;
     }
 
@@ -116,7 +139,8 @@ class ShopOnboarding {
       rethrow;
     }
 
-    debugPrint('🎉 Shop onboarding complete — shopId: $shopId  owner: $ownerUid');
+    debugPrint('🎉 Shop onboarding complete — shopId: $resolvedShopId  owner: $ownerUid');
+    return resolvedShopId;
   }
 
 
@@ -138,30 +162,25 @@ class ShopOnboarding {
     final db = FirebaseDatabase.instance;
     final now = DateTime.now().toIso8601String();
 
-    // Check if shop already exists (partial write) — use update not set
+    // ── Read current state ────────────────────────────────────────────────────
     final shopSnap = await db.ref('shops/$shopId').get();
     final userSnap = await db.ref('users/$ownerUid').get();
 
-    final updates = <String, dynamic>{};
+    // A partial users/ record (e.g. only lastLoginAt written by auth listener)
+    // must be treated as incomplete. Check for shopId as the completeness signal.
+    final userMap = userSnap.exists && userSnap.value is Map
+        ? Map<String, dynamic>.from(userSnap.value as Map)
+        : <String, dynamic>{};
+    final userComplete = (userMap['shopId'] as String?)?.isNotEmpty == true
+        && userMap['isActive'] == true;
 
-    if (!shopSnap.exists) {
-      updates['shops/$shopId'] = _buildShopDoc(
-        shopId:    shopId,
-        shopName:  shopName,
-        ownerUid:  ownerUid,
-        ownerName: ownerName,
-        ownerEmail:ownerEmail,
-        ownerPhone:ownerPhone,
-        plan:      plan,
-        now:       now,
-      );
-      debugPrint('  → will create shops/$shopId');
-    } else {
-      debugPrint('  → shops/$shopId already exists, skipping');
-    }
+    debugPrint('  shopExists=${shopSnap.exists}  userComplete=$userComplete  userKeys=${userMap.keys.toList()}');
 
-    if (!userSnap.exists) {
-      updates['users/$ownerUid'] = {
+    // ── Write users/ FIRST ────────────────────────────────────────────────────
+    // shops/ write rule checks users/{uid}.isActive + isOwner + shopId,
+    // so users/ must exist and be complete before shops/ can be written.
+    if (!userComplete) {
+      await db.ref('users/$ownerUid').set({
         'uid':              ownerUid,
         'shopId':           shopId,
         'displayName':      ownerName,
@@ -174,23 +193,61 @@ class ShopOnboarding {
         'isActive':         true,
         'biometricEnabled': false,
         'specialization':   'Management',
-        'totalJobs':        0,
-        'completedJobs':    0,
-        'rating':           5.0,
-        'joinedAt':         now,
-        'lastLoginAt':      now,
-        'createdAt':        now,
-      };
-      debugPrint('  → will create users/$ownerUid');
+        'totalJobs':        userMap['totalJobs'] ?? 0,
+        'completedJobs':    userMap['completedJobs'] ?? 0,
+        'rating':           userMap['rating'] ?? 5.0,
+        'joinedAt':         userMap['joinedAt'] ?? now,
+        'lastLoginAt':      userMap['lastLoginAt'] ?? now,
+        'createdAt':        userMap['createdAt'] ?? now,
+      });
+      debugPrint('✅ Resume — users/$ownerUid written (was partial=${ userSnap.exists })');
     } else {
-      debugPrint('  → users/$ownerUid already exists, skipping');
+      debugPrint('  → users/$ownerUid complete, skipping');
     }
 
-    if (updates.isNotEmpty) {
-      await db.ref().update(updates);
+    // ── Write shops/ SECOND ───────────────────────────────────────────────────
+    // Pass existing shop data (if any) so _buildShopDoc merges rather than blanks
+    final existingShop = shopSnap.exists && shopSnap.value is Map
+        ? Map<String, dynamic>.from(shopSnap.value as Map)
+        : <String, dynamic>{};
+
+    if (!shopSnap.exists) {
+      await db.ref('shops/$shopId').set(_buildShopDoc(
+        shopId:    shopId,
+        shopName:  shopName,
+        ownerUid:  ownerUid,
+        ownerName: ownerName,
+        ownerEmail:ownerEmail,
+        ownerPhone:ownerPhone,
+        plan:      plan,
+        now:       now,
+        existing:  existingShop,
+      ));
+      debugPrint('✅ Resume — shops/$shopId written');
+    } else {
+      // Shop exists but may have blank fields — patch missing ones only
+      final patches = <String, dynamic>{};
+      void patch(String key, String val) {
+        final cur = (existingShop[key] as String?) ?? '';
+        if (cur.isEmpty && val.isNotEmpty) patches['shops/$shopId/$key'] = val;
+      }
+      patch('shopName',  shopName);
+      patch('ownerName', ownerName);
+      patch('ownerEmail',ownerEmail);
+      patch('phone',     ownerPhone);
+      patch('email',     ownerEmail);
+      if (patches.isNotEmpty) {
+        await db.ref().update(patches);
+        debugPrint('✅ Resume — patched \${patches.keys.length} missing fields in shops/$shopId');
+      } else {
+        debugPrint('  → shops/$shopId already complete, skipping');
+      }
+    }
+
+    if (!userComplete || !shopSnap.exists) {
       debugPrint('✅ Resume complete — $ownerUid');
     } else {
-      debugPrint('ℹ️  Nothing to resume — both records already exist');
+      debugPrint('ℹ️  Nothing to resume — all records already complete');
     }
   }
 
@@ -204,207 +261,85 @@ class ShopOnboarding {
     required String ownerPhone,
     required String plan,
     required String now,
+    // Optional: existing shop data to merge over (for partial updates)
+    Map<String, dynamic> existing = const {},
   }) {
+    // Helper: prefer existing non-empty value, fall back to provided param
+    String resolveField(String key, String param) {
+      final v = (existing[key] as String?) ?? '';
+      return v.isNotEmpty ? v : param;
+    }
+
     return {
       // ── Core identity ────────────────────────────────────────────────────
       'shopId':    shopId,
-      'shopName':  shopName,
+      'shopName':  resolveField('shopName',  shopName),
       'ownerUid':  ownerUid,
-      'ownerName': ownerName,
-      'ownerEmail':ownerEmail,
-      'phone':     ownerPhone,
-      'email':     ownerEmail,
-      'address':   '',
-      'gstNumber': '',
-      'logoUrl':   '',
-      'createdAt': now,
-      'plan':      plan,
+      'ownerName': resolveField('ownerName', ownerName),
+      'ownerEmail':resolveField('ownerEmail', ownerEmail),
+      'phone':     resolveField('phone',     ownerPhone),
+      'email':     resolveField('email',     ownerEmail),
+      'address':   resolveField('address',   ''),
+      'gstNumber': resolveField('gstNumber', ''),
+      'logoUrl':   resolveField('logoUrl',   ''),
+      'createdAt': resolveField('createdAt', now),
+      'plan':      resolveField('plan',      plan),
       'isActive':  true,   // ← NEVER omit or set false
 
       // ── Quick-toggle top-level booleans ──────────────────────────────────
-      'darkMode':               false,
-      'requireIntakePhoto':     false,
-      'requireCompletionPhoto': false,
+      'darkMode':               existing['darkMode']               as bool? ?? false,
+      'requireIntakePhoto':     existing['requireIntakePhoto']     as bool? ?? false,
+      'requireCompletionPhoto': existing['requireCompletionPhoto'] as bool? ?? false,
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 2. INVOICE & RECEIPTS
-      // ─────────────────────────────────────────────────────────────────────
-      // Top-level invoicePrefix retained for backward-compat with providers.dart
-      'invoicePrefix': 'INV',
-      'invoiceSettings': {
-        // Template style shown in InvoicePage
-        'template':   'Standard',   // Standard | Branded | Minimal | Thermal Print
-        // Invoice option toggles (InvoicePage INVOICE OPTIONS section)
-        'showQR':     true,         // Show payment QR on invoice
-        'showLogo':   true,         // Display shop logo at top
-        'showTerms':  false,        // Show T&C section
-        'footerText': 'Thank you for choosing $shopName!',
-      },
+      // ── Invoice ──────────────────────────────────────────────────────────
+      'invoicePrefix': resolveField('invoicePrefix', 'INV'),
+      'invoiceSettings': existing['invoiceSettings'] != null
+          ? Map<String, dynamic>.from(existing['invoiceSettings'] as Map)
+          : {
+              'template':   'Standard',
+              'showQR':     true,
+              'showLogo':   true,
+              'showTerms':  false,
+              'footerText': 'Thank you for choosing us!',
+            },
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 3. TAX & GST
-      // ─────────────────────────────────────────────────────────────────────
-      // Top-level defaultTaxRate retained for backward-compat
-      'defaultTaxRate': 18.0,
-      'taxSettings': {
-        'taxType':        'GST',   // GST | VAT | No Tax
-        'priceInclusive': false,   // true = tax extracted from selling price
-      },
+      // ── Tax — top-level + settings map (providers.dart reads both) ────────
+      'defaultTaxRate': (existing['defaultTaxRate'] as num?)?.toDouble() ?? 18.0,
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 4. PAYMENT METHODS (POS)
-      // ─────────────────────────────────────────────────────────────────────
-      'enabledPayments': ['Cash', 'UPI (GPay/PhonePe)'],
+      // ── Settings map — flat structure matching providers.dart reads ───────
+      // providers.dart: d['settings']['taxType'], d['settings']['priceInclusive']
+      // providers.dart: d['settings']['warranty_screen_replacement'] etc.
+      'settings': () {
+        final s = existing['settings'] != null
+            ? Map<String, dynamic>.from(existing['settings'] as Map)
+            : <String, dynamic>{};
+        return {
+          'taxType':        s['taxType']        ?? 'GST',
+          'priceInclusive': s['priceInclusive'] ?? false,
+          // Warranty days keyed by warranty_* (snake_case) — matches providers.dart
+          'warranty_screen_replacement':   s['warranty_screen_replacement']   ?? 90,
+          'warranty_battery_replacement':  s['warranty_battery_replacement']  ?? 180,
+          'warranty_water_damage_repair':  s['warranty_water_damage_repair']  ?? 30,
+          'warranty_charging_port_repair': s['warranty_charging_port_repair'] ?? 60,
+          'warranty_software_repair':      s['warranty_software_repair']      ?? 7,
+          'warranty_camera_repair':        s['warranty_camera_repair']        ?? 60,
+          'warranty_speaker_mic_repair':   s['warranty_speaker_mic_repair']   ?? 45,
+          'warranty_back_glass_repair':    s['warranty_back_glass_repair']    ?? 30,
+        };
+      }(),
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 5 / 6. TECHNICIANS + WORKFLOW STAGES
-      // ─────────────────────────────────────────────────────────────────────
-      'workflowStages': _defaultWorkflowStages(),
+      // ── Payment methods ───────────────────────────────────────────────────
+      'enabledPayments': existing['enabledPayments'] != null
+          ? List<String>.from(existing['enabledPayments'] as List)
+          : ['Cash', 'UPI (GPay/PhonePe)'],
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 7. WARRANTY RULES
-      // ─────────────────────────────────────────────────────────────────────
-      // Top-level defaultWarrantyDays retained for backward-compat
-      'defaultWarrantyDays': 30,
-      'warrantyRules': {
-        'Screen Replacement':   90,
-        'Battery Replacement':  180,
-        'Water Damage Repair':  30,
-        'Charging Port Repair': 60,
-        'Software Repair':      7,
-        'Camera Repair':        60,
-        'Speaker / Mic Repair': 45,
-        'Back Glass Repair':    30,
-      },
+      // ── Workflow stages ───────────────────────────────────────────────────
+      'workflowStages': existing['workflowStages'] ?? _defaultWorkflowStages(),
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 9. WHATSAPP BUSINESS
-      // ─────────────────────────────────────────────────────────────────────
-      'whatsapp': {
-        'apiKey':           '',
-        'phoneNumberId':    '',
-        'connected':        false,
-        // Auto-send triggers (WhatsappPage toggles)
-        'autoPickupReady':  true,
-        'autoStatusUpdate': false,
-        'autoReminder':     true,
-        // Message templates (editable in WhatsappPage)
-        'templates': {
-          'pickupReady':
-              'Hi {name}! 👋 Your {device} ({job_num}) is ready for collection.\n'
-              'Amount due: ₹{amount}. Open Mon–Sat 10am–7pm. 📍 {shop_address}',
-          'jobUpdate':
-              'Hi {name}! Update on your {device}: Status changed to {status}. '
-              'Questions? Call us at {phone}.',
-          'pickupReminder':
-              'Hi {name}, reminder: your {device} has been ready for {days} days. '
-              'Please collect at your earliest convenience.',
-        },
-      },
+      // ── Warranty (top-level for backward-compat) ──────────────────────────
+      'defaultWarrantyDays': (existing['defaultWarrantyDays'] as int?) ?? 30,
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 10. SMS GATEWAY
-      // ─────────────────────────────────────────────────────────────────────
-      'sms': {
-        'provider':       'MSG91',   // MSG91 | Twilio | TextLocal | Fast2SMS
-        'apiKey':         '',
-        'senderId':       'TECHFX',
-        'onPickupReady':  true,
-        'onStatusUpdate': false,
-      },
 
-      // ─────────────────────────────────────────────────────────────────────
-      // 11. PUSH NOTIFICATIONS
-      // ─────────────────────────────────────────────────────────────────────
-      'pushNotifications': {
-        'Job Overdue Alert':        true,
-        'Low Stock Warning':        true,
-        'New Job Created':          false,
-        'Job Status Changed':       true,
-        'Daily Summary (8am)':      false,
-        'Customer Pickup Reminder': true,
-        'Payment Received':         true,
-        'Warranty Expiring Soon':   false,
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 12. EMAIL / SMTP
-      // ─────────────────────────────────────────────────────────────────────
-      'emailSettings': {
-        'smtpHost':                 'smtp.gmail.com',
-        'smtpPort':                 587,
-        'fromAddress':              '',
-        // Never store raw passwords in plaintext in production;
-        // use Firebase Functions / Secret Manager. This field is
-        // a placeholder so the schema exists on first load.
-        'appPassword':              '',
-        'displayName':              shopName,
-        'sendInvoiceOnCompletion':  true,
-        'sendPickupReady':          true,
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 13. PAYMENT GATEWAY (online collection)
-      // ─────────────────────────────────────────────────────────────────────
-      'paymentGateway': {
-        'provider':  '',     // razorpay | stripe | paytm | instamojo
-        'apiKey':    '',
-        'apiSecret': '',
-        'testMode':  true,
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 15. SUPPLIER INTEGRATION
-      // ─────────────────────────────────────────────────────────────────────
-      'supplier': {
-        'apiUrl':      '',
-        'apiKey':      '',
-        'autoReorder': false,
-        'emailPO':     true,
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 16. AI DIAGNOSTICS
-      // ─────────────────────────────────────────────────────────────────────
-      'aiDiagnostics': {
-        'anthropicApiKey':  '',
-        'diagnosisEnabled': true,
-        'pricingEnabled':   false,
-        'partsEnabled':     false,
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 17. APP LOCK & BIOMETRICS
-      // ─────────────────────────────────────────────────────────────────────
-      // Stores the shop-level default policy.
-      // Per-user biometricEnabled is in users/$uid/biometricEnabled.
-      // Actual PINs are in users/$uid/pin — NOT here.
-      'appLock': {
-        'pinEnabled':       false,
-        'biometricEnabled': false,
-        'autoLock':         true,
-        'lockAfterMinutes': 2,
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 19. CLOUD BACKUP
-      // ─────────────────────────────────────────────────────────────────────
-      'backup': {
-        'frequency': 'Daily',         // Daily | Weekly | Manual
-        'location':  'Google Drive',  // Google Drive | iCloud | Local Storage
-      },
-
-      // ─────────────────────────────────────────────────────────────────────
-      // 14. ACCOUNTING INTEGRATIONS
-      // ─────────────────────────────────────────────────────────────────────
-      'accounting': {
-        'tally':       false,
-        'zoho':        false,
-        'quickbooks':  false,
-      },
-
-      // ── Misc / future-use ────────────────────────────────────────────────
-      'settings': {},
     };
   }
 

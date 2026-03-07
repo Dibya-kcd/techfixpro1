@@ -9,6 +9,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import '../models/m.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 import '../data/photo_service.dart';
@@ -63,7 +64,10 @@ class _RDState extends ConsumerState<RepairDetailScreen>
         taxAmt: taxAmt,
         grandTotal: grandTotal,
         onSaveToFirebase: () async {
-          final role = ref.read(currentUserProvider).asData?.value?.role ?? 'technician';
+          final active = ref.read(activeSessionProvider);
+          final role = (active?.role.isNotEmpty == true)
+              ? active!.role
+              : (ref.read(currentUserProvider).asData?.value?.role ?? 'technician');
           if (!RoleAccess.canCreateInvoice(role)) return null;
           final db = FirebaseDatabase.instance;
           final invId = 'inv_${DateTime.now().millisecondsSinceEpoch}';
@@ -1209,8 +1213,10 @@ class _EditTabState extends ConsumerState<_EditTab>
 
   void _save() {
     final techs = ref.read(techsProvider);
-    final session = ref.read(currentUserProvider).asData?.value;
-    final shopId = session?.shopId ?? '';
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final shopId  = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
     
     final labor = double.tryParse(_labor.text) ?? 0;
     final parts = widget.job.partsCost;

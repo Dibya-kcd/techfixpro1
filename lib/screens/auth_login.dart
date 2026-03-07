@@ -30,6 +30,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
   final _password = TextEditingController();
   bool    _showPassword        = false;
   bool    _loading             = false;
+  bool    _resetSent            = false;
   String? _error;
   bool    _needsVerification   = false;
   int     _resendCooldown      = 0;
@@ -207,18 +208,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       setState(() => _error = 'Enter your email address above first');
       return;
     }
+    setState(() { _loading = true; _error = null; });
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: C.bgElevated,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        content: Text('Reset link sent to $email',
-            style: GoogleFonts.syne(fontWeight: FontWeight.w600, color: C.white)),
-      ));
+      // Show inline success — then auto-pop back to lock screen after 2.5s
+      setState(() {
+        _loading = false;
+        _error = null;
+        _resetSent = true;
+      });
+      await Future.delayed(const Duration(milliseconds: 2500));
+      if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
     } catch (_) {
-      if (mounted) setState(() => _error = 'Failed to send reset email');
+      if (mounted) setState(() { _error = 'Failed to send reset email'; _loading = false; });
     }
   }
 
@@ -341,26 +344,50 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
 
                         PBtn(
                           label: _loading ? 'Signing in…' : 'Sign In',
-                          onTap: _loading ? null : _login,
+                          onTap: (_loading || _resetSent) ? null : _login,
                           full: true, icon: Icons.lock_open_rounded,
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
 
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            _LinkBtn(
-                              label: 'Create account',
-                              onTap: () => Navigator.of(context).push(
-                                MaterialPageRoute(
-                                    builder: (_) => const SignUpScreen())),
+                        // Forgot password success banner
+                        if (_resetSent)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2EC4B6).withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: const Color(0xFF2EC4B6).withValues(alpha: 0.3)),
                             ),
-                            _LinkBtn(
-                              label: 'Forgot password?',
-                              onTap: _resetPassword,
-                            ),
-                          ],
-                        ),
+                            child: Row(children: [
+                              const Icon(Icons.mark_email_read_outlined,
+                                  color: Color(0xFF2EC4B6), size: 16),
+                              const SizedBox(width: 10),
+                              Expanded(child: Text(
+                                'Reset link sent — check your inbox. Returning…',
+                                style: GoogleFonts.syne(fontSize: 12,
+                                    color: Color(0xFF2EC4B6),
+                                    fontWeight: FontWeight.w600),
+                              )),
+                            ]),
+                          )
+                        else
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              _LinkBtn(
+                                label: 'Create account',
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                      builder: (_) => const SignUpScreen())),
+                              ),
+                              _LinkBtn(
+                                label: 'Forgot password?',
+                                onTap: _resetPassword,
+                              ),
+                            ],
+                          ),
                       ],
                     ),
                   ),

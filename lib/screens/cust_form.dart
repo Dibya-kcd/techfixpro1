@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:uuid/uuid.dart';
 import '../models/m.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 
@@ -47,7 +48,10 @@ class _CustFormState extends ConsumerState<CustomerFormScreen> {
     final nav = Navigator.of(context);
     final now = DateTime.now().toIso8601String();
     final id = _isEdit ? widget.customer!.customerId : const Uuid().v4();
-    final shopId = ref.read(currentUserProvider).asData?.value?.shopId ?? '';
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final shopId  = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
     final existing = widget.customer;
 
     final updated = (existing ?? Customer(

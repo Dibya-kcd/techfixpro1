@@ -7,6 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import '../models/m.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 
@@ -165,10 +166,13 @@ class _POSState extends ConsumerState<POSScreen> {
     final cart = ref.watch(cartProvider);
     final sessionAsync = ref.watch(currentUserProvider);
     final session = sessionAsync.asData?.value;
+    final activeSession = ref.watch(activeSessionProvider);
+    final resolvedShopId = activeSession?.shopId.isNotEmpty == true
+        ? activeSession!.shopId : (session?.shopId ?? '');
 
-    if (!_synced && !_syncing && session != null && session.shopId.isNotEmpty) {
+    if (!_synced && !_syncing && resolvedShopId.isNotEmpty) {
       _syncing = true;
-      _syncProductsFromFirebase(session.shopId).whenComplete(() {
+      _syncProductsFromFirebase(resolvedShopId).whenComplete(() {
         if (mounted) setState(() { _synced = true; _syncing = false; });
       });
     }
@@ -506,7 +510,7 @@ class _POSState extends ConsumerState<POSScreen> {
                                               final saleTaxType = taxType;
                                               final saleTaxRate = taxRate;
 
-                                              await _processSale(cart, session.shopId);
+                                              await _processSale(cart, resolvedShopId);
                                               ref.read(cartProvider.notifier).clear();
 
                                               if (mounted) {

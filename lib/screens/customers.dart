@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../models/m.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
@@ -75,11 +76,14 @@ class _CustState extends ConsumerState<CustomersScreen> {
     final search = ref.watch(searchCustProvider);
     final sessionAsync = ref.watch(currentUserProvider);
     final session = sessionAsync.asData?.value;
+    final activeSession = ref.watch(activeSessionProvider);
+    final resolvedShopId = activeSession?.shopId.isNotEmpty == true
+        ? activeSession!.shopId : (session?.shopId ?? '');
     final isSuperAdmin = session?.role == 'super_admin';
 
-    if (!_synced && !_syncing && session != null && session.shopId.isNotEmpty) {
+    if (!_synced && !_syncing && resolvedShopId.isNotEmpty) {
       _syncing = true;
-      _syncFromFirebase(session.shopId).whenComplete(() {
+      _syncFromFirebase(resolvedShopId).whenComplete(() {
         if (mounted) {
           setState(() {
             _synced = true;

@@ -22,6 +22,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../data/seed.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 
@@ -146,9 +147,9 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
       await _pendingUser!.sendEmailVerification();
       _startCooldown();
     } catch (e) {
-      if (mounted) setState(() => _error = 'Could not resend. Try again.');
+      if (mounted) { setState(() => _error = 'Could not resend. Try again.'); }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) { setState(() => _loading = false); }
     }
   }
 
@@ -179,20 +180,18 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
     if (!mounted) return;
     setState(() { _loading = true; _error = null; });
     try {
-      final shopId = FirebaseDatabase.instance.ref('shops').push().key!;
-
-      // Save pending info to SharedPreferences BEFORE writing to DB.
-      // If the DB write fails mid-way, login will detect the partial state
-      // via registrations/{uid} and call resumeSetup() automatically.
+      // shopId is generated INSIDE initialize() — NOT here.
+      // This ensures registrations/ and shops/ always use the same ID.
+      // Passing shopId='' tells initialize() to auto-generate it.
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('pending_shopId',    shopId);
       await prefs.setString('pending_shopName',  _pendingShopName!);
       await prefs.setString('pending_ownerName', _pendingOwnerName!);
       await prefs.setString('pending_phone',     _pendingPhone!);
       await prefs.setString('pending_pin',       _pendingPin!);
 
-      await ShopOnboarding.initialize(
-        shopId:     shopId,
+      // initialize() returns the shopId it generated and used
+      final shopId = await ShopOnboarding.initialize(
+        shopId:     '',            // auto-generate inside — single source of truth
         ownerUid:   user.uid,
         ownerName:  _pendingOwnerName!,
         ownerEmail: user.email!,
@@ -202,7 +201,6 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
       );
 
       // Success — clear pending data
-      await prefs.remove('pending_shopId');
       await prefs.remove('pending_shopName');
       await prefs.remove('pending_ownerName');
       await prefs.remove('pending_phone');
@@ -211,23 +209,40 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen>
       await ref.read(settingsProvider.notifier).loadFromFirebase(shopId);
       if (!mounted) return;
       setState(() { _step = _Step.done; _loading = false; });
+
+      // Show "You're all set!" for 2s, then set active owner session.
+      // _AuthGate sees activeSession != null → navigates to RootShell.
       await Future.delayed(const Duration(seconds: 2));
-      if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+      if (!mounted) return;
+
+      // Read completed user record to populate session correctly
+      final snap = await FirebaseDatabase.instance.ref('users/${user.uid}').get();
+      final d = snap.exists && snap.value is Map
+          ? Map<String, dynamic>.from(snap.value as Map) : <String, dynamic>{};
+      ref.read(activeSessionProvider.notifier).loginAsOwner(
+        uid:         user.uid,
+        displayName: (d['displayName'] as String?) ?? _pendingOwnerName ?? '',
+        role:        (d['role']        as String?) ?? 'admin',
+        shopId:      shopId,
+      );
+      if (mounted) { Navigator.of(context).popUntil((r) => r.isFirst); }
     } catch (e) {
       // DB write failed — pending data is still in SharedPreferences.
       // Next login will auto-resume via registrations/{uid}.
-      if (mounted) setState(() {
-        _error = 'Setup interrupted. Please log in to resume — your account was created.';
-        _loading = false;
-        _step = _Step.verifyEmail; // stay on screen, don't delete account
-      });
+      if (mounted) {
+        setState(() {
+          _error = 'Setup interrupted. Please log in to resume — your account was created.';
+          _loading = false;
+          _step = _Step.verifyEmail; // stay on screen, don't delete account
+        });
+      }
     }
   }
 
   Future<void> _cancel() async {
     _pollTimer?.cancel();
     try { await _pendingUser?.delete(); } catch (_) {}
-    if (mounted) Navigator.of(context).pop();
+    if (mounted) { Navigator.of(context).pop(); }
   }
 
   String _friendlyError(FirebaseAuthException e) => switch (e.code) {

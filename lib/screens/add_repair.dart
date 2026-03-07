@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../models/m.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 
@@ -57,9 +58,11 @@ class _AddRepairScreenState extends ConsumerState<AddRepairScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
-      final session = ref.read(currentUserProvider).asData?.value;
-      final shopId  = session?.shopId ?? '';
-      if (shopId.isEmpty) throw Exception('No shop linked — please log in again.');
+      final active = ref.read(activeSessionProvider);
+      final stream = ref.read(currentUserProvider).asData?.value;
+      final shopId  = (active?.shopId.isNotEmpty == true)
+          ? active!.shopId : (stream?.shopId ?? '');
+      if (shopId.isEmpty) throw Exception('No shop linked — please sign in via lock screen.');
 
       final db  = FirebaseDatabase.instance;
       final now = DateTime.now();
@@ -143,7 +146,7 @@ class _AddRepairScreenState extends ConsumerState<AddRepairScreen> {
           {
             'status': 'Checked In',
             'time':   now.toIso8601String(),
-            'by':     session?.displayName ?? 'Staff',
+            'by':     (active?.displayName ?? stream?.displayName) ?? 'Staff',
             'type':   'flow',
             'note':   'Job created',
           }

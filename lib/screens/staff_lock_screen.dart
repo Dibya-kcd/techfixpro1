@@ -10,6 +10,7 @@ import '../data/active_session.dart';
 import '../models/m.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
+import 'auth_signup.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  StaffLockScreen
@@ -175,21 +176,25 @@ class _StaffLockScreenState extends ConsumerState<StaffLockScreen>
 
   // ── Owner access bottom sheet ──────────────────────────────────────────────
   void _showOwnerBottomSheet() {
-    showModalBottomSheet<void>(
+    showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _OwnerAccessSheet(
-        ownerUid: widget.ownerUid,
-        ownerShopId: widget.ownerShopId,
-        onEnter: (name, role) {
-          ref.read(activeSessionProvider.notifier).resumeAsOwner(
-            uid: widget.ownerUid,
-            displayName: name,
-            role: role,
-            shopId: widget.ownerShopId,
-          );
-        },
+      barrierDismissible: true,
+      barrierColor: Colors.black.withValues(alpha: 0.7),
+      builder: (_) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+        child: _OwnerAccessSheet(
+          ownerUid: widget.ownerUid,
+          ownerShopId: widget.ownerShopId,
+          onEnter: (name, role) {
+            ref.read(activeSessionProvider.notifier).resumeAsOwner(
+              uid: widget.ownerUid,
+              displayName: name,
+              role: role,
+              shopId: widget.ownerShopId,
+            );
+          },
+        ),
       ),
     );
   }
@@ -386,11 +391,15 @@ class _FirebaseDotState extends State<_FirebaseDot>
   late AnimationController _pulse;
   late Animation<double> _pulseAnim;
   bool _connected = false;
-  StreamSubscription<DatabaseEvent>? _sub;
+  bool _isAuthed  = false;                          // live — updated by auth stream
+  StreamSubscription<DatabaseEvent>? _dbSub;
+  StreamSubscription<User?>?          _authSub;     // listens to auth state changes
 
   @override
   void initState() {
     super.initState();
+    _isAuthed = FirebaseAuth.instance.currentUser != null &&
+                !FirebaseAuth.instance.currentUser!.isAnonymous;
     _pulse = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -399,17 +408,18 @@ class _FirebaseDotState extends State<_FirebaseDot>
       CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
     );
     _listenToConnection();
+    _listenToAuth();
   }
 
   void _listenToConnection() {
     try {
-      _sub = FirebaseDatabase.instance
+      _dbSub = FirebaseDatabase.instance
           .ref('.info/connected')
           .onValue
           .listen((event) {
         final isConnected = (event.snapshot.value as bool?) ?? false;
         if (mounted) setState(() => _connected = isConnected);
-        if (isConnected) {
+        if (isConnected && _isAuthed) {
           _pulse.stop();
           _pulse.value = 1.0;
         } else {
@@ -419,19 +429,33 @@ class _FirebaseDotState extends State<_FirebaseDot>
     } catch (_) {}
   }
 
+  void _listenToAuth() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      final authed = user != null && !user.isAnonymous;
+      if (mounted) {
+        setState(() => _isAuthed = authed);
+        // Update pulse animation based on combined state
+        if (_connected && authed) {
+          _pulse.stop();
+          _pulse.value = 1.0;
+        } else {
+          _pulse.repeat(reverse: true);
+        }
+      }
+    });
+  }
+
   @override
   void dispose() {
     _pulse.dispose();
-    _sub?.cancel();
+    _dbSub?.cancel();
+    _authSub?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Check Firebase Auth state as secondary signal
-    final firebaseUser = FirebaseAuth.instance.currentUser;
-    final isAuthed = firebaseUser != null && !firebaseUser.isAnonymous;
-    final isLive = _connected && isAuthed;
+    final isLive = _connected && _isAuthed;
 
     final color = isLive
         ? const Color(0xFF22C55E)   // bright green — connected + authed
@@ -1004,6 +1028,7 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
 
   // PIN for the owner unlock pad
   String _ownerPin = '';
+  bool _sentReset = false;
 
   @override
   void initState() {
@@ -1082,6 +1107,21 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
     }
   }
 
+  Future<void> _forgotPassword() async {
+    final email = _emailCtrl.text.trim();
+    if (email.isEmpty) {
+      setState(() => _error = 'Enter your email address first');
+      return;
+    }
+    setState(() { _loading = true; _error = null; });
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      if (mounted) setState(() { _sentReset = true; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() { _error = 'Could not send reset email'; _loading = false; });
+    }
+  }
+
   void _addOwnerPinDigit(String d) {
     if (_ownerPin.length >= 4 || _loading) return;
     HapticFeedback.selectionClick();
@@ -1096,30 +1136,22 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: C.bgElevated,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        border: Border.all(color: C.border.withValues(alpha: 0.5)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        decoration: BoxDecoration(
+          color: C.bgElevated,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: C.border.withValues(alpha: 0.5)),
+        ),
+        child: SingleChildScrollView(
+          child: Padding(
           padding: EdgeInsets.only(
             bottom: MediaQuery.of(context).viewInsets.bottom + 16,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Handle
-              const SizedBox(height: 12),
-              Container(
-                width: 36, height: 4,
-                decoration: BoxDecoration(
-                  color: C.border,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
               const SizedBox(height: 20),
 
               // Header
@@ -1170,6 +1202,7 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
               ),
             ],
           ),
+        ),
         ),
       ),
     );
@@ -1282,6 +1315,50 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
             icon: Icons.lock_open_rounded,
           ),
           const SizedBox(height: 12),
+          // ── One-line: Create account · | · Forgot password ────────────
+          if (_sentReset)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                const Icon(Icons.mark_email_read_outlined,
+                    color: Color(0xFF2EC4B6), size: 14),
+                const SizedBox(width: 6),
+                Text('Reset link sent — check your inbox',
+                    style: GoogleFonts.syne(fontSize: 11,
+                        color: Color(0xFF2EC4B6), fontWeight: FontWeight.w600)),
+              ]),
+            )
+          else
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // Left: Sign up
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const SignUpScreen()));
+                  },
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 0),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                  child: Text('Create account',
+                      style: GoogleFonts.syne(fontSize: 12,
+                          color: C.textMuted, fontWeight: FontWeight.w600)),
+                ),
+                // Right: Forgot password
+                TextButton(
+                  onPressed: _loading ? null : _forgotPassword,
+                  style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 0),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                  child: Text('Forgot password?',
+                      style: GoogleFonts.syne(fontSize: 12,
+                          color: C.textMuted, fontWeight: FontWeight.w600)),
+                ),
+              ],
+            ),
+          const SizedBox(height: 8),
         ],
       ],
     );
@@ -1289,20 +1366,90 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
 
   // ── Verified / enter app UI ────────────────────────────────────────────────
   Widget _buildSuccessView() {
+    final uid    = _resolvedUid.isNotEmpty ? _resolvedUid : widget.ownerUid;
+    final shopId = _resolvedShopId.isNotEmpty ? _resolvedShopId : widget.ownerShopId;
+
+    void enterApp() {
+      ref.read(activeSessionProvider.notifier).resumeAsOwner(
+        uid: uid, displayName: _ownerName,
+        role: _ownerRole, shopId: shopId,
+      );
+      Navigator.of(context).pop();
+    }
+
+    void viewStaffPins() {
+      showDialog<void>(
+        context: context,
+        barrierColor: Colors.black.withValues(alpha: 0.7),
+        builder: (_) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: _StaffPinViewer(shopId: shopId),
+          ),
+        ),
+      );
+    }
+
+    Future<void> signOutFull() async {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: C.bgCard,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text('Sign out?', style: GoogleFonts.syne(
+              fontWeight: FontWeight.w800, color: C.white)),
+          content: Text(
+            'This will disconnect the app from the database. '
+            'Staff will not be able to use the app until you sign back in.',
+            style: GoogleFonts.syne(fontSize: 13, color: C.textMuted, height: 1.5)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false),
+                child: Text('Cancel', style: GoogleFonts.syne(color: C.textMuted))),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: C.red,
+                  foregroundColor: C.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+              child: Text('Sign Out', style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
+            ),
+          ],
+        ),
+      );
+      if (confirm == true && mounted) {
+        Navigator.of(context).pop(); // close owner sheet
+        await AppUtils.signOut(ref);
+        // activeSessionProvider is now null → _AuthGate rebuilds → StaffLockScreen
+        // No manual navigation needed — _AuthGate handles routing automatically
+      }
+    }
+
+    // Icon-only action definitions
+    final actions = [
+      _OwnerAction(icon: Icons.rocket_launch_rounded, label: 'Enter App',
+          color: C.primary, onTap: enterApp),
+      _OwnerAction(icon: Icons.badge_outlined, label: 'Staff & PINs',
+          color: const Color(0xFF3B96F5), onTap: viewStaffPins),
+      _OwnerAction(icon: Icons.people_outline_rounded, label: 'Lock Screen',
+          color: C.textMuted, onTap: () => Navigator.of(context).pop()),
+      _OwnerAction(icon: Icons.logout_rounded, label: 'Sign Out',
+          color: C.red, onTap: signOutFull),
+    ];
+
     return Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // ── Verified badge ──────────────────────────────────────────────
+        // Verified badge
         Container(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: C.green.withValues(alpha: 0.07),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(color: C.green.withValues(alpha: 0.2)),
           ),
           child: Row(children: [
-            const Icon(Icons.check_circle_rounded, color: C.green, size: 22),
+            const Icon(Icons.check_circle_rounded, color: C.green, size: 20),
             const SizedBox(width: 10),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Identity Verified', style: GoogleFonts.syne(
@@ -1312,191 +1459,70 @@ class _OwnerAccessSheetState extends ConsumerState<_OwnerAccessSheet> {
             ])),
           ]),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 20),
 
-        // ── Option 1: Enter App as Admin (no role/PIN picker) ───────────
-        GestureDetector(
-          onTap: () {
-            final uid    = _resolvedUid.isNotEmpty ? _resolvedUid : widget.ownerUid;
-            final shopId = _resolvedShopId.isNotEmpty ? _resolvedShopId : widget.ownerShopId;
-            // Set admin session → _AuthGate sees activeSession != null → RootShell
-            ref.read(activeSessionProvider.notifier).resumeAsOwner(
-              uid:         uid,
-              displayName: _ownerName,
-              role:        _ownerRole,
-              shopId:      shopId,
-            );
-            Navigator.of(context).pop(); // close sheet
-          },
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: C.primary.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: C.primary.withValues(alpha: 0.3)),
-            ),
-            child: Row(children: [
-              Container(
-                width: 44, height: 44,
-                decoration: BoxDecoration(
-                  color: C.primary.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.rocket_launch_rounded,
-                    color: C.primary, size: 22),
-              ),
-              const SizedBox(width: 14),
-              Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Enter App as Admin', style: GoogleFonts.syne(
-                      fontSize: 14, fontWeight: FontWeight.w800, color: C.white)),
-                  Text('Full access · no PIN required',
-                      style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
-                ],
-              )),
-              const Icon(Icons.arrow_forward_ios_rounded,
-                  size: 15, color: C.textMuted),
-            ]),
-          ),
-        ),
-        const SizedBox(height: 10),
-
-        // ── Option 2: View Staff & PINs ─────────────────────────────────
-        GestureDetector(
-          onTap: () {
-            final shopId = _resolvedShopId.isNotEmpty
-                ? _resolvedShopId
-                : widget.ownerShopId;
-            showModalBottomSheet<void>(
-              context: context,
-              isScrollControlled: true,
-              backgroundColor: Colors.transparent,
-              builder: (_) => _StaffPinViewer(shopId: shopId),
-            );
-          },
-          child: Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: C.bgCard,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: C.border),
-            ),
-            child: Row(children: [
-              Container(
-                width: 36, height: 36,
-                decoration: BoxDecoration(
-                  color: C.primary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.badge_outlined,
-                    color: C.primary, size: 18),
-              ),
-              const SizedBox(width: 12),
-              Expanded(child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text('View Staff & PINs', style: GoogleFonts.syne(
-                    fontSize: 13, fontWeight: FontWeight.w700,
-                    color: C.white)),
-                Text('See all staff members and their access PINs',
-                    style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
-              ])),
-              const Icon(Icons.arrow_forward_ios_rounded,
-                  size: 14, color: C.textMuted),
-            ]),
-          ),
-        ),
-        const SizedBox(height: 10),
-
-        // ── Option 3: Back to role screen ───────────────────────────────
-        GestureDetector(
-          onTap: () => Navigator.of(context).pop(),
-          child: Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: C.bgCard,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: C.border),
-            ),
-            child: Row(children: [
-              Container(
-                width: 36, height: 36,
-                decoration: BoxDecoration(
-                  color: C.bgElevated,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.people_outline_rounded,
-                    color: C.textMuted, size: 18),
-              ),
-              const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Back to Role Screen', style: GoogleFonts.syne(
-                    fontSize: 13, fontWeight: FontWeight.w700, color: C.white)),
-                Text('Staff can log in with their PIN',
-                    style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
-              ])),
-            ]),
-          ),
-        ),
-        const SizedBox(height: 10),
-
-        // ── Option 4: Sign Out from Firebase ────────────────────────────
-        GestureDetector(
-          onTap: () async {
-            final confirm = await showDialog<bool>(
-              context: context,
-              builder: (_) => AlertDialog(
-                backgroundColor: C.bgCard,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                title: Text('Sign out of Firebase?', style: GoogleFonts.syne(
-                    fontWeight: FontWeight.w800, color: C.white)),
-                content: Text(
-                  'This will disconnect the app from the database. '
-                  'Staff will not be able to use the app until you sign back in.',
-                  style: GoogleFonts.syne(fontSize: 13, color: C.textMuted, height: 1.5)),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: Text('Cancel', style: GoogleFonts.syne(color: C.textMuted)),
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: C.red, foregroundColor: C.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    child: Text('Sign Out', style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
-                  ),
-                ],
-              ),
-            );
-            if (confirm == true && mounted) {
-              Navigator.of(context).pop();
-              await AppUtils.signOut(ref);
-            }
-          },
-          child: Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: C.red.withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: C.red.withValues(alpha: 0.2)),
-            ),
-            child: Row(children: [
-              const Icon(Icons.logout_rounded, color: C.red, size: 20),
-              const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Sign Out from Database', style: GoogleFonts.syne(
-                    fontSize: 13, fontWeight: FontWeight.w700, color: C.red)),
-                Text('Disconnects Firebase on this device',
-                    style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
-              ])),
-            ]),
-          ),
+        // Icon grid — 4 actions, tooltips on hover/long-press
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: actions.map((a) => _OwnerActionButton(action: a)).toList(),
         ),
         const SizedBox(height: 16),
       ],
+    );
+  }
+}
+
+// ── Owner action model ────────────────────────────────────────────────────────
+class _OwnerAction {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _OwnerAction({required this.icon, required this.label,
+      required this.color, required this.onTap});
+}
+
+// ── Icon button with tooltip ──────────────────────────────────────────────────
+class _OwnerActionButton extends StatelessWidget {
+  final _OwnerAction action;
+  const _OwnerActionButton({required this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: action.label,
+      preferBelow: true,
+      triggerMode: TooltipTriggerMode.longPress,
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E2E),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFF2A2A3A)),
+      ),
+      textStyle: GoogleFonts.syne(
+          fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white),
+      child: GestureDetector(
+        onTap: action.onTap,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56, height: 56,
+              decoration: BoxDecoration(
+                color: action.color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                    color: action.color.withValues(alpha: 0.3), width: 1.5),
+              ),
+              child: Icon(action.icon, color: action.color, size: 24),
+            ),
+            const SizedBox(height: 6),
+            Text(action.label,
+                style: GoogleFonts.syne(
+                    fontSize: 10, fontWeight: FontWeight.w600,
+                    color: action.color.withValues(alpha: 0.8))),
+          ],
+        ),
+      ),
     );
   }
 }

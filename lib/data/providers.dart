@@ -29,12 +29,17 @@ final currentUserProvider = StreamProvider<SessionUser?>((ref) {
             .ref('users/${firebaseUser.uid}').get();
         if (snap.exists && snap.value is Map) {
           final d = Map<String, dynamic>.from(snap.value as Map);
-          // .catchError keeps this non-critical write from becoming an
-          // unhandled promise rejection in Flutter Web on every login.
-          FirebaseDatabase.instance
-              .ref('users/${firebaseUser.uid}/lastLoginAt')
-              .set(_ts())
-              .catchError((_) {});
+          // Only write lastLoginAt if the record is COMPLETE (has shopId).
+          // A partial record (only lastLoginAt) is created during registration
+          // before onboarding finishes — writing here would poison the
+          // !data.exists() rule check in seed.dart Step 2.
+          final hasShopId = (d['shopId'] as String?)?.isNotEmpty == true;
+          if (hasShopId) {
+            FirebaseDatabase.instance
+                .ref('users/${firebaseUser.uid}/lastLoginAt')
+                .set(_ts())
+                .catchError((_) {});
+          }
           return SessionUser(
             uid:              firebaseUser.uid,
             email:            (d['email']       as String?) ?? firebaseUser.email ?? '',
@@ -67,17 +72,23 @@ final currentUserProvider = StreamProvider<SessionUser?>((ref) {
           .ref('registrations/${firebaseUser.uid}').get();
       if (regSnap.exists && regSnap.value is Map) {
         final reg = Map<String, dynamic>.from(regSnap.value as Map);
-        final shopId   = (reg['shopId']   as String?) ?? '';
-        final shopName = (reg['shopName'] as String?) ?? '';
-        final plan     = (reg['plan']     as String?) ?? 'free';
+        final shopId    = (reg['shopId']    as String?) ?? '';
+        final shopName  = (reg['shopName']  as String?) ?? '';
+        final plan      = (reg['plan']      as String?) ?? 'free';
+        // Read all available fields from registrations/ so the shop doc
+        // is pre-filled with real data, not empty defaults
+        final regPhone  = (reg['phone']     as String?) ?? '';
+        final regName   = (reg['ownerName'] as String?)
+            ?? firebaseUser.displayName
+            ?? firebaseUser.email!.split('@').first;
         if (shopId.isNotEmpty) {
-          debugPrint('🔄 Auto-resuming setup for ${firebaseUser.uid} / $shopId');
+          debugPrint('🔄 Auto-resuming setup for \${firebaseUser.uid} / \$shopId');
           await ShopOnboarding.resumeSetup(
             shopId:     shopId,
             ownerUid:   firebaseUser.uid,
-            ownerName:  firebaseUser.displayName ?? firebaseUser.email!.split('@').first,
+            ownerName:  regName,
             ownerEmail: firebaseUser.email ?? '',
-            ownerPhone: '',
+            ownerPhone: regPhone,
             shopName:   shopName,
             plan:       plan,
           );

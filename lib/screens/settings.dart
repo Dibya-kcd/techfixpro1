@@ -178,8 +178,13 @@ class SettingsScreen extends ConsumerWidget {
                     ? 'Technician'
                     : 'Staff';
 
-    if (session != null && session.shopId.isNotEmpty && s.shopId != session.shopId) {
-      ref.read(settingsProvider.notifier).loadFromFirebase(session.shopId);
+    // Use activeSession.shopId — always current (set on PIN entry).
+    // currentUserProvider may be stale when owner resumes via lock screen.
+    final buildShopId = activeSession?.shopId.isNotEmpty == true
+        ? activeSession!.shopId
+        : (session?.shopId ?? '');
+    if (buildShopId.isNotEmpty && s.shopId != buildShopId) {
+      ref.read(settingsProvider.notifier).loadFromFirebase(buildShopId);
     }
 
     void go(Widget page) => Navigator.of(context).push(
@@ -485,8 +490,11 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
   }
 
   Future<void> _save() async {
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final effectiveShopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (effectiveShopId.isEmpty) return;
 
     String logoUrl = _existingLogoUrl ?? '';
 
@@ -496,7 +504,7 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
       try {
         final uploaded = await PhotoService.uploadBytes(
           _logoBytes!,
-          'logos/${session.shopId}',
+          'logos/$effectiveShopId',
         );
         if (uploaded != null) {
           logoUrl = uploaded;
@@ -522,7 +530,7 @@ class _ShopProfileState extends ConsumerState<ShopProfilePage> {
           logoUrl: logoUrl,
         ));
     await _shopSave(context, ref,
-        () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId));
+        () => ref.read(settingsProvider.notifier).saveToFirebase(effectiveShopId));
   }
 
   // Priority: newly-picked bytes → existing URL → placeholder
@@ -652,7 +660,9 @@ class _DemoDataState extends ConsumerState<DemoDataPage> {
 
   Future<void> _seed() async {
     final session = ref.read(currentUserProvider).asData?.value;
-    final shopId = session?.shopId ?? 'shop1';
+    final active = ref.read(activeSessionProvider);
+    final shopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (session?.shopId ?? '');
     
     setState(() => _seeding = true);
     try {
@@ -670,7 +680,9 @@ class _DemoDataState extends ConsumerState<DemoDataPage> {
 
   Future<void> _clear() async {
     final session = ref.read(currentUserProvider).asData?.value;
-    final shopId = session?.shopId ?? 'shop1';
+    final active = ref.read(activeSessionProvider);
+    final shopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (session?.shopId ?? '');
     
     final confirm = await showDialog<bool>(
       context: context,
@@ -830,11 +842,14 @@ class _InvoicePageState extends ConsumerState<InvoicePage> {
       ..['invoiceFooter']   = _footer.text.trim();
     ref.read(settingsProvider.notifier).update(
         current.copyWith(invoicePrefix: _prefix.text.trim(), settings: newSettings));
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final effectiveShopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (effectiveShopId.isEmpty) return;
     if (!mounted) return;
     await _shopSave(context, ref,
-        () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId),
+        () => ref.read(settingsProvider.notifier).saveToFirebase(effectiveShopId),
         successMsg: '✅ Invoice settings saved');
   }
 
@@ -952,8 +967,11 @@ class _TaxPageState extends ConsumerState<TaxPage> {
       ..['taxType']        = _taxType
       ..['priceInclusive'] = _priceInclusive;
 
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final effectiveShopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (effectiveShopId.isEmpty) return;
     // Step 1: Update local settings state immediately so UI reacts at once
     ref.read(settingsProvider.notifier).update(
         current.copyWith(defaultTaxRate: rate, settings: newSettings));
@@ -968,7 +986,7 @@ class _TaxPageState extends ConsumerState<TaxPage> {
     // Step 3: Save shop settings to Firebase
     if (!mounted) return;
     await _shopSave(context, ref,
-        () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId),
+        () => ref.read(settingsProvider.notifier).saveToFirebase(effectiveShopId),
         successMsg: '✅ Tax saved — all active job totals updated');
   }
 
@@ -1076,10 +1094,13 @@ class _PayMethodsState extends ConsumerState<PaymentMethodsPage> {
     final enabled = _methods.entries.where((e) => e.value).map((e) => e.key).toList();
     ref.read(settingsProvider.notifier).update(
         ref.read(settingsProvider).copyWith(enabledPayments: enabled));
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final effectiveShopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (effectiveShopId.isEmpty) return;
     await _shopSave(context, ref,
-        () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId));
+        () => ref.read(settingsProvider.notifier).saveToFirebase(effectiveShopId));
   }
 
   @override
@@ -1285,10 +1306,17 @@ class _StaffFormState extends ConsumerState<StaffFormPage> {
       _snack('PIN must be exactly 4 digits', C.red); return;
     }
 
-    final session = ref.read(currentUserProvider).asData?.value;
-    final shopId  = session?.shopId ?? '';
+    // Use activeSessionProvider first — it's set on PIN entry and stays current.
+    // currentUserProvider only fires on Firebase Auth state change, so it can
+    // be stale (empty shopId) when owner resumes via lock screen PIN.
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final shopId  = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId
+        : (stream?.shopId ?? '');
     if (shopId.isEmpty) {
-      _snack('Not logged in — cannot save', C.red); return;
+      _snack('Not logged in — please tap your name on the lock screen first.', C.red);
+      return;
     }
 
     final existing = widget.staff;
@@ -1554,10 +1582,13 @@ class _WorkflowState extends ConsumerState<WorkflowPage> {
   Future<void> _save() async {
     ref.read(settingsProvider.notifier).update(
         ref.read(settingsProvider).copyWith(workflowStages: _stages));
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final effectiveShopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (effectiveShopId.isEmpty) return;
     await _shopSave(context, ref,
-        () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId));
+        () => ref.read(settingsProvider.notifier).saveToFirebase(effectiveShopId));
   }
 
   @override
@@ -1670,8 +1701,11 @@ class _WarrantyPageState extends ConsumerState<WarrantyPage> {
     }
     ref.read(settingsProvider.notifier).update(current.copyWith(
         defaultWarrantyDays: int.tryParse(_days.text) ?? 30, settings: newSettings));
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) return;
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final effectiveShopId = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (effectiveShopId.isEmpty) return;
 
     // Build a summary line: "Screen 90d · Battery 180d · ..."
     final summary = _rules.entries.map((e) {
@@ -1682,7 +1716,7 @@ class _WarrantyPageState extends ConsumerState<WarrantyPage> {
     }).join(' · ');
 
     await _shopSave(context, ref,
-        () => ref.read(settingsProvider.notifier).saveToFirebase(session.shopId),
+        () => ref.read(settingsProvider.notifier).saveToFirebase(effectiveShopId),
         successMsg: '✅ Warranty saved — $summary');
   }
 
@@ -2456,14 +2490,17 @@ class _UserRolesState extends ConsumerState<UserRolesPage>
   // ─── Firebase ops ────────────────────────────────────────────
 
   Future<void> _loadStaff() async {
-    final session = ref.read(currentUserProvider).asData?.value;
-    if (session == null || session.shopId.isEmpty) {
-      setState(() { _loadError = 'Not logged in or shopId missing.'; });
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final shopId  = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
+    if (shopId.isEmpty) {
+      setState(() { _loadError = 'Not logged in — please enter via lock screen.'; });
       return;
     }
     setState(() { _loadingStaff = true; _loadError = ''; });
     try {
-      await ref.read(staffProvider.notifier).loadFromFirebase(session.shopId);
+      await ref.read(staffProvider.notifier).loadFromFirebase(shopId);
       for (final s in ref.read(staffProvider)) {
         _pinCtrls.putIfAbsent(s.uid, () => TextEditingController());
       }

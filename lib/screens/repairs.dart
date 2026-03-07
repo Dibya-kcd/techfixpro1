@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../models/m.dart';
 import '../theme/t.dart';
@@ -29,8 +30,10 @@ class _RepairsState extends ConsumerState<RepairsScreen> {
   }
 
   void _maybeSync() {
-    final session = ref.read(currentUserProvider).asData?.value;
-    final shopId = session?.shopId ?? '';
+    final active = ref.read(activeSessionProvider);
+    final stream = ref.read(currentUserProvider).asData?.value;
+    final shopId  = (active?.shopId.isNotEmpty == true)
+        ? active!.shopId : (stream?.shopId ?? '');
     if (shopId.isNotEmpty && _syncedShopId != shopId && !_syncing) {
       _syncing = true;
       _syncJobsFromFirebase(shopId).whenComplete(() {
