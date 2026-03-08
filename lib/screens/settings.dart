@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -356,10 +359,9 @@ class SettingsScreen extends ConsumerWidget {
               SettingsTile(icon: '🧪', title: 'Demo Data Tools',
                   subtitle: 'Seed or clear demo data for this shop',
                   onTap: () => go(const DemoDataPage())),
-            if (activeSession?.isOwner == true || session?.isOwner == true)
-              SettingsTile(icon: '🧪', title: 'Firebase Diagnostics',
-                  subtitle: 'Test connection and permissions',
-                  onTap: () => go(const FirebaseDiagnosticsPage())),
+            SettingsTile(icon: '🧪', title: 'Firebase Diagnostics',
+                subtitle: 'Test connection and permissions',
+                onTap: () => go(const FirebaseDiagnosticsPage())),
           ]),
 
           // ── About ────────────────────────────────────────────
@@ -3206,47 +3208,137 @@ class _SmsPageState extends State<SmsPage> {
 // ═════════════════════════════════════════════════════════════
 // 11. PUSH NOTIFICATIONS
 // ═════════════════════════════════════════════════════════════
-class PushNotifPage extends StatefulWidget {
+class PushNotifPage extends ConsumerStatefulWidget {
   const PushNotifPage({super.key});
   @override
-  State<PushNotifPage> createState() => _PushNotifState();
+  ConsumerState<PushNotifPage> createState() => _PushNotifState();
 }
 
-class _PushNotifState extends State<PushNotifPage> {
+class _PushNotifState extends ConsumerState<PushNotifPage> {
+  // Keys match Firebase path: shops/{shopId}/pushSettings/{key}
   final _notifs = <String, bool>{
-    'Job Overdue Alert': true,
-    'Low Stock Warning': true,
-    'New Job Created': false,
-    'Job Status Changed': true,
-    'Daily Summary (8am)': false,
-    'Customer Pickup Reminder': true,
-    'Payment Received': true,
-    'Warranty Expiring Soon': false,
+    'jobOverdue':       true,
+    'lowStock':         true,
+    'newJob':           false,
+    'statusChanged':    true,
+    'dailySummary':     false,
+    'pickupReminder':   true,
+    'paymentReceived':  true,
+    'warrantyExpiring': false,
   };
+
+  // Human-readable labels for each key
+  static const _labels = <String, String>{
+    'jobOverdue':       'Job Overdue Alert',
+    'lowStock':         'Low Stock Warning',
+    'newJob':           'New Job Created',
+    'statusChanged':    'Job Status Changed',
+    'dailySummary':     'Daily Summary (8am)',
+    'pickupReminder':   'Customer Pickup Reminder',
+    'paymentReceived':  'Payment Received',
+    'warrantyExpiring': 'Warranty Expiring Soon',
+  };
+
+  bool _loading = true;
+  bool _saving  = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final shopId = ref.read(activeSessionProvider)?.shopId
+        ?? ref.read(settingsProvider).shopId;
+    if (shopId.isEmpty) { setState(() => _loading = false); return; }
+    try {
+      final snap = await FirebaseDatabase.instance
+          .ref('shops/$shopId/pushSettings').get();
+      if (snap.exists && snap.value is Map) {
+        final data = Map<String, dynamic>.from(snap.value as Map);
+        setState(() {
+          for (final k in _notifs.keys) {
+            if (data.containsKey(k)) _notifs[k] = data[k] as bool? ?? _notifs[k]!;
+          }
+        });
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _save() async {
+    final shopId = ref.read(activeSessionProvider)?.shopId
+        ?? ref.read(settingsProvider).shopId;
+    if (shopId.isEmpty) return;
+    setState(() => _saving = true);
+    try {
+      await FirebaseDatabase.instance
+          .ref('shops/$shopId/pushSettings')
+          .update(Map.from(_notifs));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('✅ Notification preferences saved',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.green,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('❌ Save failed: $e',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.red, behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) => _Page(
     title: 'Push Notifications', subtitle: 'Alerts sent to this device',
     children: [
-      _infoBanner('Push notifications appear in your phone\'s notification centre.'),
-      SettingsGroup(title: 'ALERT TYPES',
+      _infoBanner('Preferences are saved per shop and apply to all devices.'),
+      if (_loading)
+        const Center(child: Padding(
+          padding: EdgeInsets.all(32),
+          child: CircularProgressIndicator(color: C.primary),
+        ))
+      else ...[
+        SettingsGroup(
+          title: 'ALERT TYPES',
           tiles: _notifs.entries.map((e) => SettingsTile(
             icon: _notifIcon(e.key),
-            title: e.key,
+            title: _labels[e.key] ?? e.key,
             subtitle: e.value ? 'Enabled' : 'Disabled',
-            trailing: Switch(value: e.value,
-                onChanged: (v) => setState(() => _notifs[e.key] = v)),
-          )).toList()),
-      _SaveBtn(onSave: () {}),
+            trailing: Switch(
+              value: e.value,
+              onChanged: (v) => setState(() => _notifs[e.key] = v),
+            ),
+          )).toList(),
+        ),
+        _SaveBtn(
+          onSave: _saving ? () {} : _save,
+          label: _saving ? 'Saving…' : 'Save Preferences',
+        ),
+      ],
     ],
   );
 
   String _notifIcon(String k) {
     const m = {
-      'Job Overdue Alert': '⏰', 'Low Stock Warning': '📦',
-      'New Job Created': '🔧', 'Job Status Changed': '🔄',
-      'Daily Summary (8am)': '📊', 'Customer Pickup Reminder': '🎉',
-      'Payment Received': '💰', 'Warranty Expiring Soon': '🛡️',
+      'jobOverdue':       '⏰',
+      'lowStock':         '📦',
+      'newJob':           '🔧',
+      'statusChanged':    '🔄',
+      'dailySummary':     '📊',
+      'pickupReminder':   '🎉',
+      'paymentReceived':  '💰',
+      'warrantyExpiring': '🛡️',
     };
     return m[k] ?? '🔔';
   }
@@ -3776,40 +3868,360 @@ class _BackupState extends State<BackupPage> {
 // ═════════════════════════════════════════════════════════════
 // 20. EXPORT DATA
 // ═════════════════════════════════════════════════════════════
-class ExportPage extends StatefulWidget {
+class ExportPage extends ConsumerStatefulWidget {
   const ExportPage({super.key});
   @override
-  State<ExportPage> createState() => _ExportPageState();
+  ConsumerState<ExportPage> createState() => _ExportPageState();
 }
 
-class _ExportPageState extends State<ExportPage> {
-  String _fromDate = '2025-01-01';
-  String _toDate   = DateTime.now().toIso8601String().substring(0, 10);
+class _ExportPageState extends ConsumerState<ExportPage> {
+  late TextEditingController _fromCtrl;
+  late TextEditingController _toCtrl;
   final Map<String, bool> _exporting = {};
+  int _exportedCount = 0; // rows in last export, shown in snackbar
 
   final _exports = [
-    ('jobs',      '🔧', 'All Repair Jobs',         'Complete job history with status, costs & timeline'),
-    ('customers', '👥', 'Customers List',           'Names, phones, tier, spend history'),
-    ('inventory', '📦', 'Inventory & Stock',        'Products, SKUs, prices, stock levels'),
-    ('invoices',  '🧾', 'Invoices & Receipts',      'All generated invoices with line items'),
-    ('payments',  '💰', 'Payment Transactions',      'All payments received and pending'),
-    ('finance',   '📊', 'Financial Summary Report', 'Revenue, costs, tax, profit summary'),
+    ('jobs',      '🔧', 'All Repair Jobs',          'Complete job history with status, costs & timeline'),
+    ('customers', '👥', 'Customers List',            'Names, phones, tier, spend history'),
+    ('inventory', '📦', 'Inventory & Stock',         'Products, SKUs, prices, stock levels'),
+    ('invoices',  '🧾', 'Invoices & Receipts',       'All generated invoices with line items'),
+    ('payments',  '💰', 'Payment Transactions',       'All payments received and pending'),
+    ('finance',   '📊', 'Financial Summary Report',  'Revenue, costs, tax, profit summary'),
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _fromCtrl = TextEditingController(text: '2025-01-01');
+    _toCtrl   = TextEditingController(
+        text: DateTime.now().toIso8601String().substring(0, 10));
+  }
+
+  @override
+  void dispose() {
+    _fromCtrl.dispose();
+    _toCtrl.dispose();
+    super.dispose();
+  }
+
+  // ── date helpers ──────────────────────────────────────────
+  DateTime get _from =>
+      DateTime.tryParse(_fromCtrl.text) ?? DateTime(2020);
+  DateTime get _to {
+    final d = DateTime.tryParse(_toCtrl.text) ?? DateTime.now();
+    return DateTime(d.year, d.month, d.day, 23, 59, 59);
+  }
+
+  bool _inRange(String isoDate) {
+    if (isoDate.isEmpty) return true;
+    try {
+      final dt = DateTime.parse(isoDate.replaceAll(' ', 'T'));
+      return !dt.isBefore(_from) && !dt.isAfter(_to);
+    } catch (_) { return true; }
+  }
+
+  // ── CSV helpers ───────────────────────────────────────────
+  static String _esc(dynamic v) {
+    final s = (v ?? '').toString().replaceAll('"', '""');
+    return s.contains(',') || s.contains('"') || s.contains('\n')
+        ? '"$s"' : s;
+  }
+
+  static String _buildCsv(List<String> headers, List<List<dynamic>> rows) {
+    final buf = StringBuffer();
+    buf.writeln(headers.map(_esc).join(','));
+    for (final r in rows) { buf.writeln(r.map(_esc).join(',')); }
+    return buf.toString();
+  }
+
+  void _download(String csv, String filename) {
+    final bytes = utf8.encode(csv);
+    final blob  = web.Blob(
+      [bytes.toJS].toJS,
+      web.BlobPropertyBag(type: 'text/csv;charset=utf-8;'),
+    );
+    final url = web.URL.createObjectURL(blob);
+    final a   = web.document.createElement('a') as web.HTMLAnchorElement
+      ..href     = url
+      ..download = filename;
+    web.document.body!.append(a);
+    a.click();
+    a.remove();
+    web.URL.revokeObjectURL(url);
+  }
+
+  // ── Export builders ───────────────────────────────────────
+  String _exportJobs() {
+    final jobs = ref.read(jobsProvider)
+        .where((j) => _inRange(j.createdAt)).toList();
+    _exportedCount = jobs.length;
+    final headers = [
+      'Job #','Status','Payment Status','Customer','Phone',
+      'Brand','Model','IMEI','Problem','Technician',
+      'Parts Cost','Labor Cost','Discount','Tax','Total',
+      'Amount Paid','Payment Method','Priority',
+      'Created At','Estimated End','Updated At','Warranty Expiry',
+    ];
+    final rows = jobs.map((j) => [
+      j.jobNumber, j.status, j.paymentStatus,
+      j.customerName, j.customerPhone,
+      j.brand, j.model, j.imei, j.problem, j.technicianName,
+      j.partsCost.toStringAsFixed(2),
+      j.laborCost.toStringAsFixed(2),
+      j.discountAmount.toStringAsFixed(2),
+      j.taxAmount.toStringAsFixed(2),
+      j.totalAmount.toStringAsFixed(2),
+      j.amountPaid.toStringAsFixed(2),
+      j.paymentMethod, j.priority,
+      j.createdAt, j.estimatedEndDate, j.updatedAt,
+      j.warrantyExpiry ?? '',
+    ]).toList();
+    return _buildCsv(headers, rows);
+  }
+
+  String _exportCustomers() {
+    final customers = ref.read(customersProvider)
+        .where((c) => _inRange(c.createdAt)).toList();
+    _exportedCount = customers.length;
+    final headers = [
+      'Name','Phone','Email','Address','Tier','VIP',
+      'Blacklisted','Points','Repairs','Total Spend',
+      'Notes','Created At',
+    ];
+    final rows = customers.map((c) => [
+      c.name, c.phone, c.email, c.address,
+      c.tier, c.isVip ? 'Yes' : 'No',
+      c.isBlacklisted ? 'Yes' : 'No',
+      c.points, c.repairsCount,
+      c.totalSpend.toStringAsFixed(2),
+      c.notes, c.createdAt,
+    ]).toList();
+    return _buildCsv(headers, rows);
+  }
+
+  String _exportInventory() {
+    final products = ref.read(productsProvider);
+    _exportedCount = products.length;
+    final headers = [
+      'SKU','Product Name','Category','Brand','Supplier',
+      'Cost Price','Selling Price','Margin %',
+      'Stock Qty','Reorder Level','Status','Created At',
+    ];
+    final rows = products.map((p) {
+      final margin = p.costPrice > 0
+          ? ((p.sellingPrice - p.costPrice) / p.costPrice * 100).toStringAsFixed(1)
+          : '—';
+      return [
+        p.sku, p.productName, p.category, p.brand, p.supplierName,
+        p.costPrice.toStringAsFixed(2), p.sellingPrice.toStringAsFixed(2),
+        margin, p.stockQty, p.reorderLevel,
+        p.isActive ? 'Active' : 'Inactive', p.createdAt,
+      ];
+    }).toList();
+    return _buildCsv(headers, rows);
+  }
+
+  Future<String> _exportInvoices() async {
+    final shopId = ref.read(activeSessionProvider)?.shopId
+        ?? ref.read(settingsProvider).shopId;
+    final snap = await FirebaseDatabase.instance
+        .ref('invoices')
+        .orderByChild('shopId')
+        .equalTo(shopId)
+        .get();
+    final invoices = <Map<String, dynamic>>[];
+    if (snap.exists && snap.value is Map) {
+      for (final child in (snap.value as Map).entries) {
+        final d = Map<String, dynamic>.from(child.value as Map);
+        if (_inRange((d['issuedAt'] as String?) ?? '')) invoices.add(d);
+      }
+    }
+    _exportedCount = invoices.length;
+    final headers = [
+      'Invoice #','Job ID','Customer ID','Subtotal','Discount',
+      'Tax Rate %','Tax Amount','Grand Total',
+      'Payment Method','Payment Status','Amount Paid','Balance Due',
+      'Issued At','Paid At',
+    ];
+    final rows = invoices.map((inv) => [
+      inv['invoiceNumber'] ?? '',
+      inv['jobId'] ?? '',
+      inv['customerId'] ?? '',
+      ((inv['subtotal'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+      ((inv['discount'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+      ((inv['taxRate']  as num?)?.toDouble() ?? 0).toStringAsFixed(1),
+      ((inv['taxAmount'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+      ((inv['grandTotal'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+      inv['paymentMethod'] ?? '',
+      inv['paymentStatus'] ?? '',
+      ((inv['amountPaid'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+      ((inv['balanceDue'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+      inv['issuedAt'] ?? '',
+      inv['paidAt'] ?? '',
+    ]).toList();
+    return _buildCsv(headers, rows);
+  }
+
+  String _exportPayments() {
+    final txs = ref.read(transactionsProvider)
+        .where((t) {
+          final raw = t['time'];
+          if (raw == null) return false;
+          final dt = raw is int
+              ? DateTime.fromMillisecondsSinceEpoch(raw)
+              : DateTime.tryParse(raw.toString()) ?? DateTime(2000);
+          return !dt.isBefore(_from) && !dt.isAfter(_to);
+        }).toList();
+    _exportedCount = txs.length;
+    final headers = [
+      'Transaction ID','Type','Job ID','Product Name',
+      'Qty','Price','Total','Payment Method',
+      'Collected By','Date',
+    ];
+    final rows = txs.map((t) {
+      final raw = t['time'];
+      final dt  = raw is int
+          ? DateTime.fromMillisecondsSinceEpoch(raw)
+          : DateTime.tryParse(raw.toString() ) ?? DateTime(2000);
+      return [
+        t['txId'] ?? '',
+        t['type'] ?? '',
+        t['jobId'] ?? '',
+        t['productName'] ?? '',
+        t['qty'] ?? '',
+        ((t['price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+        ((t['total'] as num?)?.toDouble() ?? 0).toStringAsFixed(2),
+        t['payment'] ?? '',
+        t['collectedBy'] ?? '',
+        dt.toIso8601String().substring(0, 16),
+      ];
+    }).toList();
+    return _buildCsv(headers, rows);
+  }
+
+  String _exportFinance() {
+    // Build from transactions in range
+    final txs = ref.read(transactionsProvider).where((t) {
+      final raw = t['time'];
+      if (raw == null) return false;
+      final dt = raw is int
+          ? DateTime.fromMillisecondsSinceEpoch(raw)
+          : DateTime.tryParse(raw.toString()) ?? DateTime(2000);
+      return !dt.isBefore(_from) && !dt.isAfter(_to);
+    }).toList();
+
+    double totalRevenue = 0, repairRevenue = 0, posRevenue = 0;
+    double totalCost = 0;
+    final Map<String, double> byDay = {};
+
+    for (final t in txs) {
+      final amt  = ((t['total'] as num?)?.toDouble() ?? 0);
+      final cost = ((t['cost']  as num?)?.toDouble() ?? 0);
+      final type = (t['type'] as String?) ?? '';
+      totalRevenue += amt;
+      totalCost    += cost;
+      if (type == 'repair') repairRevenue += amt;
+      if (type == 'pos')    posRevenue    += amt;
+      final raw = t['time'];
+      final dt  = raw is int
+          ? DateTime.fromMillisecondsSinceEpoch(raw)
+          : DateTime.tryParse(raw.toString()) ?? DateTime(2000);
+      final day = dt.toIso8601String().substring(0, 10);
+      byDay[day] = (byDay[day] ?? 0) + amt;
+    }
+
+    final profit = totalRevenue - totalCost;
+    final margin = totalRevenue > 0
+        ? (profit / totalRevenue * 100).toStringAsFixed(1) : '0.0';
+
+    // Summary rows
+    final summaryHeaders = ['Metric', 'Value'];
+    final summaryRows = [
+      ['Period', '${_fromCtrl.text} → ${_toCtrl.text}'],
+      ['Total Revenue', '₹${totalRevenue.toStringAsFixed(2)}'],
+      ['Repair Revenue', '₹${repairRevenue.toStringAsFixed(2)}'],
+      ['POS Revenue', '₹${posRevenue.toStringAsFixed(2)}'],
+      ['Total Cost (parts)', '₹${totalCost.toStringAsFixed(2)}'],
+      ['Gross Profit', '₹${profit.toStringAsFixed(2)}'],
+      ['Gross Margin %', '$margin%'],
+      ['Total Transactions', '${txs.length}'],
+    ];
+
+    // Daily breakdown
+    final dailyHeaders = ['Date', 'Revenue'];
+    final sortedDays = byDay.keys.toList()..sort();
+    final dailyRows = sortedDays
+        .map((d) => [d, '₹${byDay[d]!.toStringAsFixed(2)}'])
+        .toList();
+
+    _exportedCount = summaryRows.length;
+
+    // Two sections separated by blank line
+    final buf = StringBuffer();
+    buf.writeln('SUMMARY');
+    buf.write(_buildCsv(summaryHeaders, summaryRows));
+    buf.writeln();
+    buf.writeln('DAILY BREAKDOWN');
+    buf.write(_buildCsv(dailyHeaders, dailyRows));
+    return buf.toString();
+  }
+
+  // ── Dispatch ──────────────────────────────────────────────
+  Future<void> _doExport(String key) async {
+    setState(() => _exporting[key] = true);
+    try {
+      final now = DateTime.now().toIso8601String().substring(0, 10);
+      String csv;
+      switch (key) {
+        case 'jobs':      csv = _exportJobs();            break;
+        case 'customers': csv = _exportCustomers();       break;
+        case 'inventory': csv = _exportInventory();       break;
+        case 'invoices':  csv = await _exportInvoices();  break;
+        case 'payments':  csv = _exportPayments();        break;
+        case 'finance':   csv = _exportFinance();         break;
+        default: return;
+      }
+      _download(csv, 'techfix_${key}_$now.csv');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            '✅ ${key[0].toUpperCase()}${key.substring(1)} exported'
+            '${_exportedCount > 0 ? ' · $_exportedCount rows' : ''}',
+            style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.green,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('❌ Export failed: $e',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.red, behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _exporting[key] = false);
+    }
+  }
+
+  // ── Build ─────────────────────────────────────────────────
+  @override
   Widget build(BuildContext context) => _Page(
-    title: 'Export Data', subtitle: 'Download your shop data',
+    title: 'Export Data', subtitle: 'Download your shop data as CSV',
     children: [
       const SLabel('DATE RANGE'),
       Row(children: [
-        Expanded(child: AppField(label: 'From', hint: 'YYYY-MM-DD',
-            controller: TextEditingController(text: _fromDate),
-            onChanged: (v) => _fromDate = v)),
+        Expanded(child: AppField(
+          label: 'From', hint: 'YYYY-MM-DD', controller: _fromCtrl)),
         const SizedBox(width: 10),
-        Expanded(child: AppField(label: 'To', hint: 'YYYY-MM-DD',
-            controller: TextEditingController(text: _toDate),
-            onChanged: (v) => _toDate = v)),
+        Expanded(child: AppField(
+          label: 'To',   hint: 'YYYY-MM-DD', controller: _toCtrl)),
       ]),
+      const SizedBox(height: 4),
+      _infoBanner('Files download automatically. '
+          'Open with Excel, Google Sheets, or Tally.'),
       const SLabel('EXPORT OPTIONS'),
       ..._exports.map((e) {
         final loading = _exporting[e.$1] == true;
@@ -3817,36 +4229,44 @@ class _ExportPageState extends State<ExportPage> {
           padding: const EdgeInsets.only(bottom: 10),
           child: Container(
             padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(color: C.bgCard, borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: C.border)),
+            decoration: BoxDecoration(
+              color: C.bgCard,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: C.border),
+            ),
             child: Row(children: [
               Text(e.$2, style: const TextStyle(fontSize: 24)),
               const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(e.$3, style: GoogleFonts.syne(fontWeight: FontWeight.w700,
-                    fontSize: 13, color: C.white)),
-                Text(e.$4, style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(e.$3, style: GoogleFonts.syne(
+                    fontWeight: FontWeight.w700, fontSize: 13, color: C.white)),
+                Text(e.$4, style: GoogleFonts.syne(
+                    fontSize: 11, color: C.textMuted)),
               ])),
               const SizedBox(width: 8),
-              SizedBox(width: 80, height: 36,
+              SizedBox(width: 84, height: 36,
                 child: ElevatedButton(
-                  onPressed: loading ? null : () async {
-                    setState(() => _exporting[e.$1] = true);
-                    await Future.delayed(const Duration(seconds: 2));
-                    if (mounted) setState(() => _exporting[e.$1] = false);
-                  },
+                  onPressed: loading ? null : () => _doExport(e.$1),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: loading ? C.bgElevated : C.primary,
                     foregroundColor: loading ? C.textMuted : C.bg,
                     elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                     padding: EdgeInsets.zero,
                   ),
                   child: loading
                       ? const SizedBox(width: 16, height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: C.primary))
-                      : Text('Export', style: GoogleFonts.syne(
-                          fontWeight: FontWeight.w800, fontSize: 12)),
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: C.primary))
+                      : Row(mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.download, size: 14),
+                            const SizedBox(width: 4),
+                            Text('CSV', style: GoogleFonts.syne(
+                                fontWeight: FontWeight.w800, fontSize: 12)),
+                          ]),
                 ),
               ),
             ]),
