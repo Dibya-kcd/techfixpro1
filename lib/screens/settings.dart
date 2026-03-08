@@ -10,6 +10,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../data/providers.dart';
+import '../data/notification_service.dart';
 import '../data/active_session.dart';
 import '../models/m.dart';
 import '../theme/t.dart';
@@ -3015,123 +3016,279 @@ class _UserRolesState extends ConsumerState<UserRolesPage>
 // ═════════════════════════════════════════════════════════════
 // 9. WHATSAPP BUSINESS
 // ═════════════════════════════════════════════════════════════
-class WhatsappPage extends StatefulWidget {
+class WhatsappPage extends ConsumerStatefulWidget {
   const WhatsappPage({super.key});
   @override
-  State<WhatsappPage> createState() => _WhatsappPageState();
+  ConsumerState<WhatsappPage> createState() => _WhatsappPageState();
 }
 
-class _WhatsappPageState extends State<WhatsappPage> {
-  final _apiKey    = TextEditingController();
-  final _phoneId   = TextEditingController();
-  bool _connected  = false;
-  bool _autoPickup = true, _autoUpdate = false, _reminder = true;
+class _WhatsappPageState extends ConsumerState<WhatsappPage> {
+  // ── controllers ───────────────────────────────────────────────────────────
+  final _apiKey  = TextEditingController();
+  final _phoneId = TextEditingController();
 
-  final _templates = [
-    _Template('Pickup Ready',
-        'Hi {name}! 👋 Your {device} ({job_num}) is ready for collection.\n'
-        'Amount due: ₹{amount}. Open Mon–Sat 10am–7pm. 📍 {shop_address}'),
-    _Template('Job Update',
-        'Hi {name}! Update on your {device}: Status changed to {status}. '
-        'Questions? Call us at {phone}.'),
-    _Template('Pickup Reminder',
-        'Hi {name}, reminder: your {device} has been ready for {days} days. '
-        'Please collect at your earliest convenience.'),
-  ];
+  // ── state ─────────────────────────────────────────────────────────────────
+  WhatsAppConfig _cfg    = const WhatsAppConfig();
+  bool _loading          = true;
+  bool _testing          = false;
+  bool _saving           = false;
+  bool _testOk           = false; // shows green tick after successful test
+
+  // local editable template bodies (synced from _cfg on load)
+  late String _tplPickup;
+  late String _tplUpdate;
+  late String _tplReminder;
+
+  @override
+  void initState() {
+    super.initState();
+    _tplPickup   = const WhatsAppConfig().tplPickup;
+    _tplUpdate   = const WhatsAppConfig().tplUpdate;
+    _tplReminder = const WhatsAppConfig().tplReminder;
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _apiKey.dispose();
+    _phoneId.dispose();
+    super.dispose();
+  }
+
+  String get _shopId =>
+      ref.read(activeSessionProvider)?.shopId
+      ?? ref.read(settingsProvider).shopId;
+
+  Future<void> _load() async {
+    final cfg = await NotificationService.loadWhatsApp(_shopId);
+    if (!mounted) return;
+    setState(() {
+      _cfg        = cfg;
+      _tplPickup  = cfg.tplPickup;
+      _tplUpdate  = cfg.tplUpdate;
+      _tplReminder= cfg.tplReminder;
+      _apiKey.text  = cfg.apiKey;
+      _phoneId.text = cfg.phoneId;
+      _loading    = false;
+    });
+  }
+
+  Future<void> _test() async {
+    setState(() { _testing = true; _testOk = false; });
+    final cfg  = _currentConfig();
+    final shop = ref.read(settingsProvider);
+    final result = await NotificationService.testWhatsApp(cfg, shop.phone);
+    if (!mounted) return;
+    setState(() { _testing = false; _testOk = result.ok; });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(result.ok ? '✅ ${result.message}' : '❌ ${result.message}',
+          style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+      backgroundColor: result.ok ? C.green : C.red,
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 4),
+    ));
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await NotificationService.saveWhatsApp(_shopId, _currentConfig());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('✅ WhatsApp settings saved',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.green, behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('❌ Save failed: $e',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.red, behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  WhatsAppConfig _currentConfig() => WhatsAppConfig(
+    apiKey:       _apiKey.text.trim(),
+    phoneId:      _phoneId.text.trim(),
+    autoPickup:   _cfg.autoPickup,
+    autoUpdate:   _cfg.autoUpdate,
+    autoReminder: _cfg.autoReminder,
+    tplPickup:    _tplPickup,
+    tplUpdate:    _tplUpdate,
+    tplReminder:  _tplReminder,
+  );
+
+  void _setCfg(WhatsAppConfig updated) => setState(() => _cfg = updated);
 
   @override
   Widget build(BuildContext context) => _Page(
-    title: 'WhatsApp Business', subtitle: 'Send automated customer messages',
+    title: 'WhatsApp Business', subtitle: 'Automated customer messages via Meta API',
     children: [
       _infoBanner(
         'Requires WhatsApp Business API access from Meta. '
-        'Get your API key from business.facebook.com → WhatsApp → API Setup.',
+        'Get credentials at business.facebook.com → WhatsApp → API Setup.',
         color: C.green,
       ),
-      const SLabel('API CREDENTIALS'),
-      AppField(label: 'API Key / Bearer Token', controller: _apiKey,
-          hint: 'Paste your API key here'),
-      AppField(label: 'Phone Number ID', controller: _phoneId,
-          hint: 'From Meta Developer Console'),
-      const SizedBox(height: 8),
-      SizedBox(width: double.infinity, height: 48,
-        child: ElevatedButton.icon(
-          onPressed: () => setState(() => _connected = !_connected),
-          icon: Icon(_connected ? Icons.check_circle : Icons.link,
-              size: 18, color: C.bg),
-          label: Text(_connected ? 'Connected ✓' : 'Test Connection',
+      if (_loading)
+        const Center(child: Padding(
+          padding: EdgeInsets.all(32),
+          child: CircularProgressIndicator(color: C.primary),
+        ))
+      else ...[
+        // ── Credentials ─────────────────────────────────────────────────
+        const SLabel('API CREDENTIALS'),
+        AppField(
+          label:      'API Key / Bearer Token',
+          controller: _apiKey,
+          hint:       'Paste Meta Bearer token here',
+          obscureText: true,
+          onChanged:  (_) => setState(() => _testOk = false),
+        ),
+        AppField(
+          label:      'Phone Number ID',
+          controller: _phoneId,
+          hint:       'From Meta Developer Console',
+          onChanged:  (_) => setState(() => _testOk = false),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, height: 48,
+          child: ElevatedButton.icon(
+            onPressed: (_testing || _apiKey.text.isEmpty || _phoneId.text.isEmpty)
+                ? null : _test,
+            icon: _testing
+                ? const SizedBox(width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: C.bg))
+                : Icon(_testOk ? Icons.check_circle : Icons.wifi_tethering,
+                    size: 18, color: C.bg),
+            label: Text(
+              _testing ? 'Testing…' : _testOk ? 'Connected ✓' : 'Test Connection',
               style: GoogleFonts.syne(fontWeight: FontWeight.w800, fontSize: 14)),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: _connected ? C.green : C.primary,
-            foregroundColor: C.bg,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            elevation: 0,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _testOk ? C.green : C.primary,
+              foregroundColor: C.bg,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              elevation: 0,
+            ),
           ),
         ),
-      ),
-      const SLabel('AUTO-SEND TRIGGERS'),
-      SettingsGroup(title: '', tiles: [
-        SettingsTile(icon: '🎉', title: 'Pickup Ready Notification',
+
+        // ── Triggers ────────────────────────────────────────────────────
+        const SLabel('AUTO-SEND TRIGGERS'),
+        SettingsGroup(title: '', tiles: [
+          SettingsTile(
+            icon:     '🎉',
+            title:    'Pickup Ready Notification',
             subtitle: 'Send when job → Ready for Pickup',
-            trailing: Switch(value: _autoPickup,
-                onChanged: (v) => setState(() => _autoPickup = v))),
-        SettingsTile(icon: '🔄', title: 'Status Update Messages',
+            trailing: Switch(
+              value:     _cfg.autoPickup,
+              onChanged: (v) => _setCfg(_cfg.copyWith(autoPickup: v))),
+          ),
+          SettingsTile(
+            icon:     '🔄',
+            title:    'Status Update Messages',
             subtitle: 'Notify on every status change',
-            trailing: Switch(value: _autoUpdate,
-                onChanged: (v) => setState(() => _autoUpdate = v))),
-        SettingsTile(icon: '⏰', title: '3-Day Pickup Reminder',
+            trailing: Switch(
+              value:     _cfg.autoUpdate,
+              onChanged: (v) => _setCfg(_cfg.copyWith(autoUpdate: v))),
+          ),
+          SettingsTile(
+            icon:     '⏰',
+            title:    '3-Day Pickup Reminder',
             subtitle: 'Auto-remind if not collected in 3 days',
-            trailing: Switch(value: _reminder,
-                onChanged: (v) => setState(() => _reminder = v))),
-      ]),
-      const SLabel('MESSAGE TEMPLATES'),
-      ..._templates.map((t) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: SCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text(t.name, style: GoogleFonts.syne(fontWeight: FontWeight.w700,
-                fontSize: 13, color: C.white)),
-            TextButton(onPressed: () => _editTemplate(context, t),
-                child: Text('Edit', style: GoogleFonts.syne(
-                    color: C.primary, fontWeight: FontWeight.w700))),
-          ]),
-          const SizedBox(height: 6),
-          Container(padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: C.bgElevated,
-                borderRadius: BorderRadius.circular(8)),
-            child: Text(t.body, style: GoogleFonts.syne(
-                fontSize: 11, color: C.textMuted, height: 1.5))),
-        ])),
-      )),
-      _SaveBtn(onSave: () {}),
+            trailing: Switch(
+              value:     _cfg.autoReminder,
+              onChanged: (v) => _setCfg(_cfg.copyWith(autoReminder: v))),
+          ),
+        ]),
+
+        // ── Templates ───────────────────────────────────────────────────
+        const SLabel('MESSAGE TEMPLATES'),
+        _tplCard('Pickup Ready',    _tplPickup,
+            (v) => setState(() => _tplPickup   = v)),
+        _tplCard('Job Update',      _tplUpdate,
+            (v) => setState(() => _tplUpdate   = v)),
+        _tplCard('Pickup Reminder', _tplReminder,
+            (v) => setState(() => _tplReminder = v)),
+
+        _SaveBtn(
+          onSave: _saving ? () {} : _save,
+          label: _saving ? 'Saving…' : '💾  Save WhatsApp Settings',
+        ),
+      ],
     ],
   );
 
-  void _editTemplate(BuildContext context, _Template t) {
-    final ctrl = TextEditingController(text: t.body);
+  Widget _tplCard(String name, String body, ValueChanged<String> onSaved) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: SCard(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text(name, style: GoogleFonts.syne(
+                fontWeight: FontWeight.w700, fontSize: 13, color: C.white)),
+            TextButton(
+              onPressed: () => _editTemplate(context, name, body, onSaved),
+              child: Text('Edit', style: GoogleFonts.syne(
+                  color: C.primary, fontWeight: FontWeight.w700)),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: C.bgElevated, borderRadius: BorderRadius.circular(8)),
+            child: Text(body, style: GoogleFonts.syne(
+                fontSize: 11, color: C.textMuted, height: 1.5)),
+          ),
+        ])),
+      );
+
+  void _editTemplate(BuildContext ctx, String name, String body,
+      ValueChanged<String> onSaved) {
+    final ctrl = TextEditingController(text: body);
     showDialog(
-      context: context,
+      context: ctx,
       builder: (_) => AlertDialog(
         backgroundColor: C.bgCard,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text('Edit: ${t.name}', style: GoogleFonts.syne(
+        title: Text('Edit: $name', style: GoogleFonts.syne(
             fontWeight: FontWeight.w800, color: C.white)),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          _infoBanner('Variables: {name} {device} {amount} {job_num} {status} {days}'),
-          TextFormField(controller: ctrl, maxLines: 5,
-              style: GoogleFonts.syne(fontSize: 13, color: C.text),
-              decoration: const InputDecoration()),
+          _infoBanner(
+            'Variables: {name} {device} {amount} {job_num} '
+            '{status} {days} {shop_address} {shop_phone}'),
+          const SizedBox(height: 8),
+          TextFormField(
+            controller: ctrl, maxLines: 6,
+            style: GoogleFonts.syne(fontSize: 13, color: C.text),
+            decoration: const InputDecoration(),
+          ),
         ]),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context),
-              child: Text('Cancel', style: GoogleFonts.syne(color: C.textMuted))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Cancel',
+                style: GoogleFonts.syne(color: C.textMuted))),
           ElevatedButton(
-            onPressed: () { setState(() => t.body = ctrl.text); Navigator.pop(context); },
-            style: ElevatedButton.styleFrom(backgroundColor: C.primary,
-                foregroundColor: C.bg,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-            child: Text('Save Template', style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
+            onPressed: () {
+              onSaved(ctrl.text);
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: C.primary, foregroundColor: C.bg,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            child: Text('Save Template',
+                style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
           ),
         ],
       ),
@@ -3139,70 +3296,247 @@ class _WhatsappPageState extends State<WhatsappPage> {
   }
 }
 
-class _Template { final String name; String body; _Template(this.name, this.body); }
-
 // ═════════════════════════════════════════════════════════════
 // 10. SMS GATEWAY
 // ═════════════════════════════════════════════════════════════
-class SmsPage extends StatefulWidget {
+class SmsPage extends ConsumerStatefulWidget {
   const SmsPage({super.key});
   @override
-  State<SmsPage> createState() => _SmsPageState();
+  ConsumerState<SmsPage> createState() => _SmsPageState();
 }
 
-class _SmsPageState extends State<SmsPage> {
-  String _provider = 'MSG91';
+class _SmsPageState extends ConsumerState<SmsPage> {
   final _apiKey  = TextEditingController();
   final _sender  = TextEditingController(text: 'TECHFX');
-  bool _onPickup = true, _onUpdate = false;
+
+  SmsConfig _cfg   = const SmsConfig();
+  bool _loading    = true;
+  bool _testing    = false;
+  bool _saving     = false;
+  bool _testOk     = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _apiKey.dispose();
+    _sender.dispose();
+    super.dispose();
+  }
+
+  String get _shopId =>
+      ref.read(activeSessionProvider)?.shopId
+      ?? ref.read(settingsProvider).shopId;
+
+  Future<void> _load() async {
+    final cfg = await NotificationService.loadSms(_shopId);
+    if (!mounted) return;
+    setState(() {
+      _cfg           = cfg;
+      _apiKey.text   = cfg.apiKey;
+      _sender.text   = cfg.senderId;
+      _loading       = false;
+    });
+  }
+
+  SmsConfig _currentConfig() => SmsConfig(
+    provider: _cfg.provider,
+    apiKey:   _apiKey.text.trim(),
+    senderId: _sender.text.trim(),
+    onPickup: _cfg.onPickup,
+    onUpdate: _cfg.onUpdate,
+  );
+
+  Future<void> _test() async {
+    setState(() { _testing = true; _testOk = false; });
+    final shop   = ref.read(settingsProvider);
+    final result = await NotificationService.testSms(
+        _currentConfig(), shop.phone);
+    if (!mounted) return;
+    setState(() { _testing = false; _testOk = result.ok; });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(result.ok ? '✅ ${result.message}' : '❌ ${result.message}',
+          style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+      backgroundColor: result.ok ? C.green : C.red,
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 4),
+    ));
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await NotificationService.saveSms(_shopId, _currentConfig());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('✅ SMS settings saved',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.green, behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('❌ Save failed: $e',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+          backgroundColor: C.red, behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) => _Page(
     title: 'SMS Gateway', subtitle: 'Text message notifications to customers',
     children: [
-      const SLabel('PROVIDER'),
-      ...['MSG91', 'Twilio', 'TextLocal', 'Fast2SMS'].map((p) {
-        final sel = _provider == p;
-        return GestureDetector(
-          onTap: () => setState(() => _provider = p),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: sel ? C.primary.withValues(alpha: 0.08) : C.bgCard,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: sel ? C.primary : C.border, width: sel ? 2 : 1),
+      if (_loading)
+        const Center(child: Padding(
+          padding: EdgeInsets.all(32),
+          child: CircularProgressIndicator(color: C.primary),
+        ))
+      else ...[
+        // ── Provider picker ──────────────────────────────────────────────
+        const SLabel('PROVIDER'),
+        ...['MSG91', 'Twilio', 'TextLocal', 'Fast2SMS'].map((p) {
+          final sel = _cfg.provider == p;
+          return GestureDetector(
+            onTap: () => setState(() {
+              _cfg    = _cfg.copyWith(provider: p);
+              _testOk = false;
+            }),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: sel ? C.primary.withValues(alpha: 0.08) : C.bgCard,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: sel ? C.primary : C.border, width: sel ? 2 : 1),
+              ),
+              child: Row(children: [
+                Text(_providerIcon(p),
+                    style: const TextStyle(fontSize: 20)),
+                const SizedBox(width: 12),
+                Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(p, style: GoogleFonts.syne(
+                      fontWeight: FontWeight.w700, fontSize: 13,
+                      color: sel ? C.primary : C.white)),
+                  Text(_providerHint(p), style: GoogleFonts.syne(
+                      fontSize: 10, color: C.textMuted)),
+                ])),
+                if (sel) const Icon(Icons.check_circle,
+                    color: C.primary, size: 20),
+              ]),
             ),
-            child: Row(children: [
-              Text(_providerIcon(p), style: const TextStyle(fontSize: 20)),
-              const SizedBox(width: 12),
-              Expanded(child: Text(p, style: GoogleFonts.syne(fontWeight: FontWeight.w700,
-                  fontSize: 13, color: sel ? C.primary : C.white))),
-              if (sel) const Icon(Icons.check_circle, color: C.primary, size: 20),
-            ]),
+          );
+        }),
+
+        // ── Credentials ──────────────────────────────────────────────────
+        const SLabel('CREDENTIALS'),
+        AppField(
+          label:     'API Key',
+          controller: _apiKey,
+          hint:      _providerKeyHint(_cfg.provider),
+          obscureText: true,
+          onChanged: (_) => setState(() => _testOk = false),
+        ),
+        AppField(
+          label:     'Sender ID',
+          controller: _sender,
+          hint:      _cfg.provider == 'Twilio'
+              ? 'Your Twilio number e.g. 919876543210'
+              : '6-char alphanumeric e.g. TECHFX',
+        ),
+        const SizedBox(height: 8),
+
+        // ── Test button ──────────────────────────────────────────────────
+        SizedBox(width: double.infinity, height: 48,
+          child: ElevatedButton.icon(
+            onPressed: (_testing || _apiKey.text.isEmpty) ? null : _test,
+            icon: _testing
+                ? const SizedBox(width: 16, height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: C.bg))
+                : Icon(_testOk ? Icons.check_circle : Icons.sms,
+                    size: 18, color: C.bg),
+            label: Text(
+              _testing ? 'Sending test SMS…'
+                  : _testOk ? 'SMS Sent ✓' : 'Send Test SMS',
+              style: GoogleFonts.syne(
+                  fontWeight: FontWeight.w800, fontSize: 14)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _testOk ? C.green : C.primary,
+              foregroundColor: C.bg,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              elevation: 0,
+            ),
           ),
-        );
-      }),
-      const SLabel('CREDENTIALS'),
-      AppField(label: 'API Key', controller: _apiKey, hint: 'Enter your $_provider API key'),
-      AppField(label: 'Sender ID', controller: _sender, hint: 'TECHFX (6 chars max)'),
-      const SLabel('SEND SETTINGS'),
-      SettingsGroup(title: '', tiles: [
-        SettingsTile(icon: '🎉', title: 'Pickup Ready SMS',
+        ),
+
+        // ── Send triggers ────────────────────────────────────────────────
+        const SLabel('SEND SETTINGS'),
+        SettingsGroup(title: '', tiles: [
+          SettingsTile(
+            icon:     '🎉',
+            title:    'Pickup Ready SMS',
             subtitle: 'Auto-send when Ready for Pickup',
-            trailing: Switch(value: _onPickup,
-                onChanged: (v) => setState(() => _onPickup = v))),
-        SettingsTile(icon: '🔄', title: 'Status Update SMS',
+            trailing: Switch(
+              value:     _cfg.onPickup,
+              onChanged: (v) => setState(
+                  () => _cfg = _cfg.copyWith(onPickup: v))),
+          ),
+          SettingsTile(
+            icon:     '🔄',
+            title:    'Status Update SMS',
             subtitle: 'Notify on status changes',
-            trailing: Switch(value: _onUpdate,
-                onChanged: (v) => setState(() => _onUpdate = v))),
-      ]),
-      _SaveBtn(onSave: () {}),
+            trailing: Switch(
+              value:     _cfg.onUpdate,
+              onChanged: (v) => setState(
+                  () => _cfg = _cfg.copyWith(onUpdate: v))),
+          ),
+        ]),
+
+        if (_cfg.provider == 'MSG91')
+          _infoBanner(
+            'MSG91 requires DLT-registered templates for Indian '
+            'numbers. Transactional route 4 is used. '
+            'Register templates at msg91.com → DLT.'),
+        if (_cfg.provider == 'Twilio')
+          _infoBanner(
+            'Twilio API Key format: "AccountSID:AuthToken". '
+            'Sender ID must be your Twilio phone number with country code.'),
+
+        _SaveBtn(
+          onSave: _saving ? () {} : _save,
+          label: _saving ? 'Saving…' : '💾  Save SMS Settings',
+        ),
+      ],
     ],
   );
 
   String _providerIcon(String p) =>
-      {'MSG91': '🇮🇳', 'Twilio': '🌐', 'TextLocal': '🇬🇧', 'Fast2SMS': '⚡'}[p] ?? '📱';
+      {'MSG91': '🇮🇳', 'Twilio': '🌐', 'TextLocal': '🇬🇧', 'Fast2SMS': '⚡'}[p]
+          ?? '📱';
+
+  String _providerHint(String p) => {
+    'MSG91':     'Best for India — transactional route 4',
+    'Twilio':    'Global — API Key format: AccountSID:AuthToken',
+    'TextLocal': 'UK & India — standard HTTP API',
+    'Fast2SMS':  'India — bulk SMS with DLT support',
+  }[p] ?? '';
+
+  String _providerKeyHint(String p) => p == 'Twilio'
+      ? 'AccountSID:AuthToken (colon-separated)'
+      : 'Paste your $p API key here';
 }
 
 // ═════════════════════════════════════════════════════════════

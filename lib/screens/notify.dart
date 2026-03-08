@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/m.dart';
 import '../data/providers.dart';
+import '../data/active_session.dart';
+import '../data/notification_service.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 
@@ -16,19 +18,13 @@ class NotifySheet extends ConsumerStatefulWidget {
 
 class _NotifySheetState extends ConsumerState<NotifySheet> {
   String _channel = 'WhatsApp';
+  bool   _sending = false;
   late TextEditingController _msgCtrl;
 
   @override
   void initState() {
     super.initState();
     _msgCtrl = TextEditingController(text: _buildMessage());
-
-    assert(() {
-      debugPrint(
-        '[NotifySheet] init job=${widget.job.jobId} status=${widget.job.status} total=${widget.job.totalAmount}',
-      );
-      return true;
-    }());
   }
 
   @override
@@ -38,10 +34,10 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
   }
 
   String _buildMessage() {
-    final j = widget.job;
+    final j        = widget.job;
     final settings = ref.read(settingsProvider);
     final shopName = settings.shopName.isEmpty ? 'our shop' : settings.shopName;
-    final phone    = settings.phone.isEmpty    ? '' : '\n📞 ${settings.phone}';
+    final phone    = settings.phone.isEmpty ? '' : '\n📞 ${settings.phone}';
     return 'Hi ${j.customerName}! 👋\n\n'
         'Your ${j.brand} ${j.model} (${j.jobNumber}) is ready for pickup at $shopName.\n\n'
         '📋 Repair: ${j.problem}\n'
@@ -50,24 +46,75 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
         'Thank you! 🔧';
   }
 
-  String get _recipient {
-    if (_channel == 'Email') return widget.job.customerPhone; // placeholder
-    return widget.job.customerPhone;
+  Future<void> _send() async {
+    if (_sending) return;
+    setState(() => _sending = true);
+
+    final j       = widget.job;
+    final settings = ref.read(settingsProvider);
+    final shopId  = ref.read(activeSessionProvider)?.shopId
+        ?? settings.shopId;
+    final body    = _msgCtrl.text.trim();
+
+    NotifResult result;
+
+    try {
+      if (_channel == 'WhatsApp') {
+        final cfg = await NotificationService.loadWhatsApp(shopId);
+        if (cfg.isConfigured) {
+          result = await NotificationService.sendWhatsApp(
+            cfg: cfg, toPhone: j.customerPhone, body: body);
+        } else {
+          result = const NotifResult.failure('__fallback__');
+        }
+      } else if (_channel == 'SMS') {
+        final cfg = await NotificationService.loadSms(shopId);
+        result = await NotificationService.sendSms(
+            cfg: cfg, toPhone: j.customerPhone, body: body);
+      } else {
+        result = const NotifResult.failure('__fallback__');
+      }
+    } catch (e) {
+      result = NotifResult.failure('Error: $e');
+    }
+
+    if (!mounted) return;
+    setState(() => _sending = false);
+
+    if (result.ok || result.message == '__fallback__') {
+      ref.read(jobsProvider.notifier).markNotified(j.jobId, _channel);
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          result.ok
+              ? '${_channelIcon()} ${result.message}'
+              : '${_channelIcon()} Marked as notified via $_channel',
+          style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+        backgroundColor: _channelColor(),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ));
+    } else {
+      // Real error — stay open so user can retry or fix credentials
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('❌ ${result.message}',
+            style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+        backgroundColor: C.red,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 5),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final j = widget.job;
-    assert(() {
-      debugPrint(
-        '[NotifySheet] build channel=$_channel recipient=$_recipient job=${j.jobId}',
-      );
-      return true;
-    }());
     return DraggableScrollableSheet(
       initialChildSize: 0.88,
-      maxChildSize: 0.96,
-      minChildSize: 0.5,
+      maxChildSize:     0.96,
+      minChildSize:     0.5,
       builder: (_, ctrl) => Container(
         decoration: const BoxDecoration(
           color: C.bgCard,
@@ -77,18 +124,17 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
           controller: ctrl,
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
           children: [
-            // Handle
             Center(child: Container(
               width: 40, height: 4,
-              decoration: BoxDecoration(color: C.border, borderRadius: BorderRadius.circular(99)),
+              decoration: BoxDecoration(
+                  color: C.border, borderRadius: BorderRadius.circular(99)),
             )),
             const SizedBox(height: 14),
-
-            // Header
             Row(children: [
               const Text('📣', style: TextStyle(fontSize: 22)),
               const SizedBox(width: 10),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Notify Customer', style: GoogleFonts.syne(
                     fontWeight: FontWeight.w800, fontSize: 18, color: C.white)),
                 Text(j.customerName, style: GoogleFonts.syne(
@@ -107,10 +153,9 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
                 ),
             ]),
             const SizedBox(height: 16),
-
-            // Channel selector
             Text('SEND VIA', style: GoogleFonts.syne(
-                fontSize: 10, fontWeight: FontWeight.w700, color: C.textMuted, letterSpacing: 0.5)),
+                fontSize: 10, fontWeight: FontWeight.w700,
+                color: C.textMuted, letterSpacing: 0.5)),
             const SizedBox(height: 8),
             Row(children: [
               _channelChip('💬', 'WhatsApp', C.green),
@@ -120,22 +165,16 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
               _channelChip('📧', 'Email', C.accent),
             ]),
             const SizedBox(height: 16),
-
-            // Recipient
-            SCard(
-              child: Row(children: [
-                const Icon(Icons.person_outline, color: C.textMuted, size: 18),
-                const SizedBox(width: 10),
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('To', style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
-                  Text(_recipient, style: GoogleFonts.syne(
-                      fontSize: 14, fontWeight: FontWeight.w700, color: C.white)),
-                ]),
+            SCard(child: Row(children: [
+              const Icon(Icons.person_outline, color: C.textMuted, size: 18),
+              const SizedBox(width: 10),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('To', style: GoogleFonts.syne(fontSize: 11, color: C.textMuted)),
+                Text(j.customerPhone, style: GoogleFonts.syne(
+                    fontSize: 14, fontWeight: FontWeight.w700, color: C.white)),
               ]),
-            ),
+            ])),
             const SizedBox(height: 12),
-
-            // Amount card
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -143,7 +182,8 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: C.green.withValues(alpha: 0.3)),
               ),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
                 Text('Amount to Collect', style: GoogleFonts.syne(
                     fontSize: 13, color: C.textMuted)),
                 Text(fmtMoney(j.totalAmount), style: GoogleFonts.syne(
@@ -151,37 +191,45 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
               ]),
             ),
             const SizedBox(height: 16),
-
-            // Message editor
             Text('MESSAGE PREVIEW', style: GoogleFonts.syne(
-                fontSize: 10, fontWeight: FontWeight.w700, color: C.textMuted, letterSpacing: 0.5)),
+                fontSize: 10, fontWeight: FontWeight.w700,
+                color: C.textMuted, letterSpacing: 0.5)),
             const SizedBox(height: 8),
             TextFormField(
               controller: _msgCtrl,
-              maxLines: 10,
+              maxLines:   10,
               style: GoogleFonts.syne(fontSize: 12, color: C.text, height: 1.6),
-              decoration: const InputDecoration(
-                contentPadding: EdgeInsets.all(14),
-              ),
+              decoration: const InputDecoration(contentPadding: EdgeInsets.all(14)),
             ),
             const SizedBox(height: 16),
-
-            // Actions
             Row(children: [
               Expanded(child: PBtn(
-                label: 'Cancel',
-                onTap: () => Navigator.of(context).pop(),
+                label:   'Cancel',
+                onTap:   _sending ? null : () => Navigator.of(context).pop(),
                 outline: true,
-                color: C.textMuted,
-                full: true,
+                color:   C.textMuted,
+                full:    true,
               )),
               const SizedBox(width: 12),
-              Expanded(child: PBtn(
-                label: '${_channelIcon()} Send via $_channel',
-                onTap: _send,
-                color: _channelColor(),
-                full: true,
-              )),
+              Expanded(child: _sending
+                ? Container(
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: _channelColor(),
+                      borderRadius: BorderRadius.circular(12)),
+                    child: const Center(child: SizedBox(
+                      width: 22, height: 22,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.5, color: C.bg),
+                    )),
+                  )
+                : PBtn(
+                    label: '${_channelIcon()} Send via $_channel',
+                    onTap: _send,
+                    color: _channelColor(),
+                    full:  true,
+                  ),
+              ),
             ]),
           ],
         ),
@@ -193,7 +241,10 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
     final sel = _channel == label;
     return Expanded(
       child: GestureDetector(
-        onTap: () => setState(() => _channel = label),
+        onTap: () => setState(() {
+          _channel = label;
+          _msgCtrl.text = _buildMessage();
+        }),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
@@ -213,24 +264,10 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
     );
   }
 
-  String _channelIcon() {
-    return {'WhatsApp': '💬', 'SMS': '📱', 'Email': '📧'}[_channel] ?? '📣';
-  }
+  String _channelIcon() =>
+      {'WhatsApp': '💬', 'SMS': '📱', 'Email': '📧'}[_channel] ?? '📣';
 
-  Color _channelColor() {
-    return {'WhatsApp': C.green, 'SMS': C.primary, 'Email': C.accent}[_channel] ?? C.primary;
-  }
-
-  void _send() {
-    // markNotified is now async (writes to Firebase) but UI doesn't need to wait
-    ref.read(jobsProvider.notifier).markNotified(widget.job.jobId, _channel);
-    Navigator.of(context).pop();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('${_channelIcon()} Message sent via $_channel!',
-          style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
-      backgroundColor: _channelColor(),
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-    ));
-  }
+  Color _channelColor() =>
+      {'WhatsApp': C.green, 'SMS': C.primary, 'Email': C.accent}[_channel]
+          ?? C.primary;
 }
