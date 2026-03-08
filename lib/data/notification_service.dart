@@ -5,10 +5,14 @@
 //   • lib/screens/settings.dart  — save/load config, Test Connection
 //   • lib/screens/notify.dart    — actual send on the Notify sheet
 //
+// WhatsApp: Interakt Business API (free tier — 1,000 conversations/month)
+//   Sign up free → https://app.interakt.ai
+//   Connect WhatsApp Business number → Settings → Developer → copy API Key
+//
 // Firebase layout (all under shops/{shopId}/):
 //   whatsappSettings/
-//     apiKey        String  — Meta Bearer token
-//     phoneId       String  — WhatsApp Phone Number ID from Meta console
+//     apiKey        String  — Interakt API Key (from app.interakt.ai → Settings → Developer)
+//     phoneNumber   String  — shop's WhatsApp Business number (10 digits, India)
 //     autoPickup    bool    — send when job → Ready for Pickup
 //     autoUpdate    bool    — send on every status change
 //     autoReminder  bool    — 3-day reminder
@@ -30,8 +34,8 @@ import 'package:http/http.dart' as http;
 // ─── Config models ────────────────────────────────────────────────────────────
 
 class WhatsAppConfig {
-  final String apiKey;
-  final String phoneId;
+  final String apiKey;       // Interakt API Key (from app.interakt.ai → Settings → Developer)
+  final String phoneNumber;  // shop's WhatsApp Business number e.g. 9876543210 (10 digits)
   final bool   autoPickup;
   final bool   autoUpdate;
   final bool   autoReminder;
@@ -40,18 +44,18 @@ class WhatsAppConfig {
   final String tplReminder;
 
   static const _defPickup =
-      'Hi {name}! \u{1F44B} Your {device} ({job_num}) is ready for collection.\n'
-      'Amount due: \u20B9{amount}. \u{1F4CD} {shop_address}';
+      'Hi {name}! 👋 Your {device} ({job_num}) is ready for collection.\n'
+      'Amount due: ₹{amount}.\n{shop_address}';
   static const _defUpdate =
       'Hi {name}! Update on your {device}: Status changed to *{status}*. '
       'Questions? Call us at {shop_phone}.';
   static const _defReminder =
       'Hi {name}, friendly reminder: your {device} has been ready for {days} day(s). '
-      'Please collect at your earliest convenience. \u{1F4CD} {shop_address}';
+      'Please collect at your earliest convenience.';
 
   const WhatsAppConfig({
     this.apiKey       = '',
-    this.phoneId      = '',
+    this.phoneNumber  = '',
     this.autoPickup   = true,
     this.autoUpdate   = false,
     this.autoReminder = true,
@@ -60,11 +64,14 @@ class WhatsAppConfig {
     this.tplReminder  = _defReminder,
   });
 
-  bool get isConfigured => apiKey.isNotEmpty && phoneId.isNotEmpty;
+  /// Configured when both apiKey and phoneNumber are present.
+  bool get isConfigured => apiKey.isNotEmpty && phoneNumber.isNotEmpty;
 
   factory WhatsAppConfig.fromMap(Map<String, dynamic> d) => WhatsAppConfig(
     apiKey:       (d['apiKey']       as String?) ?? '',
-    phoneId:      (d['phoneId']      as String?) ?? '',
+    // support legacy 'phoneId' key in case old data exists
+    phoneNumber:  (d['phoneNumber']  as String?)
+               ?? (d['phoneId']      as String?) ?? '',
     autoPickup:   (d['autoPickup']   as bool?)   ?? true,
     autoUpdate:   (d['autoUpdate']   as bool?)   ?? false,
     autoReminder: (d['autoReminder'] as bool?)   ?? true,
@@ -74,19 +81,19 @@ class WhatsAppConfig {
   );
 
   Map<String, dynamic> toMap() => {
-    'apiKey': apiKey,       'phoneId': phoneId,
-    'autoPickup': autoPickup, 'autoUpdate': autoUpdate,
+    'apiKey': apiKey,          'phoneNumber': phoneNumber,
+    'autoPickup': autoPickup,  'autoUpdate': autoUpdate,
     'autoReminder': autoReminder,
-    'tplPickup': tplPickup, 'tplUpdate': tplUpdate, 'tplReminder': tplReminder,
+    'tplPickup': tplPickup,    'tplUpdate': tplUpdate, 'tplReminder': tplReminder,
   };
 
   WhatsAppConfig copyWith({
-    String? apiKey, String? phoneId,
+    String? apiKey, String? phoneNumber,
     bool?   autoPickup, bool? autoUpdate, bool? autoReminder,
     String? tplPickup,  String? tplUpdate, String? tplReminder,
   }) => WhatsAppConfig(
     apiKey:       apiKey       ?? this.apiKey,
-    phoneId:      phoneId      ?? this.phoneId,
+    phoneNumber:  phoneNumber  ?? this.phoneNumber,
     autoPickup:   autoPickup   ?? this.autoPickup,
     autoUpdate:   autoUpdate   ?? this.autoUpdate,
     autoReminder: autoReminder ?? this.autoReminder,
@@ -219,9 +226,12 @@ class NotificationService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // WhatsApp Cloud API  (Meta graph.facebook.com/v19.0)
-  // Docs: developers.facebook.com/docs/whatsapp/cloud-api/messages
+  // WhatsApp — Interakt Business API  (free tier: 1,000 conversations/month)
+  // Docs: https://developers.interakt.ai/
+  // Sign up: https://app.interakt.ai  → Settings → Developer → API Key
   // ─────────────────────────────────────────────────────────────────────────
+
+  static const _interaktEndpoint = 'https://api.interakt.ai/v1/public/message/';
 
   static Future<NotifResult> sendWhatsApp({
     required WhatsAppConfig cfg,
@@ -230,51 +240,56 @@ class NotificationService {
   }) async {
     if (!cfg.isConfigured) {
       return const NotifResult.failure(
-          'WhatsApp not set up. Add API Key + Phone Number ID in '
-          'Settings \u2192 WhatsApp Business.');
+          'WhatsApp not set up. Add API Key + Phone Number in '
+          'Settings → WhatsApp Business.');
     }
 
-    final phone = _e164(toPhone);
-    final url = Uri.parse(
-        'https://graph.facebook.com/v19.0/${cfg.phoneId}/messages');
+    // Interakt expects: countryCode + 10-digit local number
+    final full  = _e164(toPhone);           // e.g. "919876543210"
+    if (full.isEmpty) {
+      return const NotifResult.failure('Invalid phone number — must be 10 digits');
+    }
+    const countryCode = '+91';
+    final localNumber = full.startsWith('91') ? full.substring(2) : full;
 
     try {
       final res = await http.post(
-        url,
+        Uri.parse(_interaktEndpoint),
         headers: {
-          'Authorization': 'Bearer ${cfg.apiKey}',
+          'Authorization': 'Basic ${cfg.apiKey}',
           'Content-Type':  'application/json',
         },
         body: jsonEncode({
-          'messaging_product': 'whatsapp',
-          'recipient_type':    'individual',
-          'to':                phone,
-          'type':              'text',
-          'text': {'preview_url': false, 'body': body},
+          'countryCode': countryCode,
+          'phoneNumber': localNumber,
+          'callbackData': 'techfixpro',
+          'type': 'Text',
+          'data': {'message': body},
         }),
       ).timeout(const Duration(seconds: 15));
 
-      if (res.statusCode == 200) {
-        final data  = jsonDecode(res.body) as Map<String, dynamic>;
-        final msgId = (data['messages'] as List?)?.firstOrNull?['id'] as String? ?? '';
-        return NotifResult.success('\u{1F4AC} WhatsApp sent (id: $msgId)');
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        return const NotifResult.success('💬 WhatsApp sent via Interakt');
       }
 
+      // Parse Interakt error
       final err = _tryJson(res.body);
-      final msg = err?['error']?['message'] as String? ?? res.body;
-      return NotifResult.failure('Meta API ${res.statusCode}: $msg');
+      final msg = (err?['message'] as String?)
+               ?? (err?['error']   as String?)
+               ?? res.body;
+      return NotifResult.failure('Interakt ${res.statusCode}: $msg');
     } on Exception catch (e) {
       return NotifResult.failure('Network error: $e');
     }
   }
 
-  /// Sends a quick test message to the shop's own number.
+  /// Sends a test message to the shop owner's own WhatsApp number.
   static Future<NotifResult> testWhatsApp(
       WhatsAppConfig cfg, String shopPhone) =>
       sendWhatsApp(
         cfg:     cfg,
-        toPhone: shopPhone.isNotEmpty ? shopPhone : cfg.phoneId,
-        body:    '\u2705 TechFix Pro \u2014 WhatsApp connection test successful! '
+        toPhone: shopPhone.isNotEmpty ? shopPhone : cfg.phoneNumber,
+        body:    '✅ TechFix Pro — WhatsApp connection test successful! '
                  'You are all set to send customer notifications.',
       );
 

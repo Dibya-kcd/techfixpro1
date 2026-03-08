@@ -3025,7 +3025,7 @@ class WhatsappPage extends ConsumerStatefulWidget {
 class _WhatsappPageState extends ConsumerState<WhatsappPage> {
   // ── controllers ───────────────────────────────────────────────────────────
   final _apiKey  = TextEditingController();
-  final _phoneId = TextEditingController();
+  final _phoneNumber = TextEditingController();
 
   // ── state ─────────────────────────────────────────────────────────────────
   WhatsAppConfig _cfg    = const WhatsAppConfig();
@@ -3051,7 +3051,7 @@ class _WhatsappPageState extends ConsumerState<WhatsappPage> {
   @override
   void dispose() {
     _apiKey.dispose();
-    _phoneId.dispose();
+    _phoneNumber.dispose();
     super.dispose();
   }
 
@@ -3067,8 +3067,8 @@ class _WhatsappPageState extends ConsumerState<WhatsappPage> {
       _tplPickup  = cfg.tplPickup;
       _tplUpdate  = cfg.tplUpdate;
       _tplReminder= cfg.tplReminder;
-      _apiKey.text  = cfg.apiKey;
-      _phoneId.text = cfg.phoneId;
+      _apiKey.text       = cfg.apiKey;
+      _phoneNumber.text  = cfg.phoneNumber;
       _loading    = false;
     });
   }
@@ -3116,7 +3116,7 @@ class _WhatsappPageState extends ConsumerState<WhatsappPage> {
 
   WhatsAppConfig _currentConfig() => WhatsAppConfig(
     apiKey:       _apiKey.text.trim(),
-    phoneId:      _phoneId.text.trim(),
+    phoneNumber:  _phoneNumber.text.trim(),
     autoPickup:   _cfg.autoPickup,
     autoUpdate:   _cfg.autoUpdate,
     autoReminder: _cfg.autoReminder,
@@ -3129,11 +3129,12 @@ class _WhatsappPageState extends ConsumerState<WhatsappPage> {
 
   @override
   Widget build(BuildContext context) => _Page(
-    title: 'WhatsApp Business', subtitle: 'Automated customer messages via Meta API',
+    title: 'WhatsApp Business', subtitle: 'Send messages via Interakt (free tier)',
     children: [
       _infoBanner(
-        'Requires WhatsApp Business API access from Meta. '
-        'Get credentials at business.facebook.com → WhatsApp → API Setup.',
+        '📲 Setup: Sign up free at app.interakt.ai → connect your WhatsApp Business number '
+        '→ Settings → Developer → copy your API Key and paste below. '
+        'Free tier: 1,000 conversations/month.',
         color: C.green,
       ),
       if (_loading)
@@ -3145,22 +3146,23 @@ class _WhatsappPageState extends ConsumerState<WhatsappPage> {
         // ── Credentials ─────────────────────────────────────────────────
         const SLabel('API CREDENTIALS'),
         AppField(
-          label:      'API Key / Bearer Token',
+          label:      'Interakt API Key',
           controller: _apiKey,
-          hint:       'Paste Meta Bearer token here',
+          hint:       'Paste your API key from app.interakt.ai → Settings → Developer',
           obscureText: true,
           onChanged:  (_) => setState(() => _testOk = false),
         ),
         AppField(
-          label:      'Phone Number ID',
-          controller: _phoneId,
-          hint:       'From Meta Developer Console',
+          label:      'WhatsApp Business Phone Number',
+          controller: _phoneNumber,
+          hint:       '10-digit number e.g. 9876543210',
+          keyboardType: TextInputType.phone,
           onChanged:  (_) => setState(() => _testOk = false),
         ),
         const SizedBox(height: 8),
         SizedBox(width: double.infinity, height: 48,
           child: ElevatedButton.icon(
-            onPressed: (_testing || _apiKey.text.isEmpty || _phoneId.text.isEmpty)
+            onPressed: (_testing || _apiKey.text.isEmpty || _phoneNumber.text.isEmpty)
                 ? null : _test,
             icon: _testing
                 ? const SizedBox(width: 16, height: 16,
