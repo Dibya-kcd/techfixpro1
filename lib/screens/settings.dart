@@ -356,9 +356,10 @@ class SettingsScreen extends ConsumerWidget {
               SettingsTile(icon: '🧪', title: 'Demo Data Tools',
                   subtitle: 'Seed or clear demo data for this shop',
                   onTap: () => go(const DemoDataPage())),
-            SettingsTile(icon: '🧪', title: 'Firebase Diagnostics',
-                subtitle: 'Test connection and permissions',
-                onTap: () => go(const FirebaseDiagnosticsPage())),
+            if (activeSession?.isOwner == true || session?.isOwner == true)
+              SettingsTile(icon: '🧪', title: 'Firebase Diagnostics',
+                  subtitle: 'Test connection and permissions',
+                  onTap: () => go(const FirebaseDiagnosticsPage())),
           ]),
 
           // ── About ────────────────────────────────────────────

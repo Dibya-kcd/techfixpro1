@@ -547,6 +547,13 @@ class _RootShellState extends ConsumerState<RootShell> {
   }
   
   void _openMoreSheet() {
+    final role    = ref.read(activeSessionProvider)?.role ?? 'technician';
+    final isOwner = ref.read(activeSessionProvider)?.isOwner ?? false;
+    final canStock    = RoleAccess.canViewInventory(role);
+    final canReports  = RoleAccess.canViewReports(role);
+    final canSettings = RoleAccess.canViewSettings(role);
+    final canDiag     = isOwner; // diagnostics: owner only
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: C.bgElevated,
@@ -554,33 +561,42 @@ class _RootShellState extends ConsumerState<RootShell> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(Icons.inventory_2_outlined, color: C.text),
-              title: const Text('Stock'),
-              onTap: () { setState(() => _idx = 3); Navigator.of(ctx).pop(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.bar_chart_outlined, color: C.text),
-              title: const Text('Reports'),
-              onTap: () { setState(() => _idx = 5); Navigator.of(ctx).pop(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined, color: C.text),
-              title: const Text('Settings'),
-              onTap: () { setState(() => _idx = 6); Navigator.of(ctx).pop(); },
-            ),
+            if (canStock)
+              ListTile(
+                leading: const Icon(Icons.inventory_2_outlined, color: C.text),
+                title: const Text('Stock'),
+                onTap: () { setState(() => _idx = 3); Navigator.of(ctx).pop(); },
+              ),
+            if (canReports)
+              ListTile(
+                leading: const Icon(Icons.bar_chart_outlined, color: C.text),
+                title: const Text('Reports'),
+                onTap: () { setState(() => _idx = 5); Navigator.of(ctx).pop(); },
+              ),
+            if (canSettings)
+              ListTile(
+                leading: const Icon(Icons.settings_outlined, color: C.text),
+                title: const Text('Settings'),
+                onTap: () { setState(() => _idx = 6); Navigator.of(ctx).pop(); },
+              ),
+            if (canDiag)
+              ListTile(
+                leading: const Icon(Icons.biotech_outlined, color: C.text),
+                title: const Text('Diagnostics'),
+                onTap: () { setState(() => _idx = 6); Navigator.of(ctx).pop(); },
+              ),
             const Divider(color: C.border, height: 1),
-            // Role logout is in Settings → Sign Out (logs out of role only).
-            // Firebase sign out is in the hidden admin screen (5-tap logo).
+            // Sign Out — always visible to all roles, triggers confirm dialog directly
             ListTile(
-              leading: const Icon(Icons.settings_outlined, color: C.textMuted),
-              title: Text('Sign out of role',
-                  style: GoogleFonts.syne(color: C.textMuted)),
-              subtitle: Text('Go to Settings → Sign Out',
+              leading: const Icon(Icons.logout, color: C.yellow),
+              title: Text('Sign Out',
+                  style: GoogleFonts.syne(
+                      color: C.yellow, fontWeight: FontWeight.w700)),
+              subtitle: Text('Returns to staff PIN screen',
                   style: GoogleFonts.syne(fontSize: 11, color: C.textDim)),
               onTap: () {
                 Navigator.of(ctx).pop();
-                setState(() => _idx = 6); // open Settings
+                _confirmRoleSignOut();
               },
             ),
           ],
@@ -588,6 +604,37 @@ class _RootShellState extends ConsumerState<RootShell> {
       ),
     );
   }
+
+  /// Signs out of current role only — Firebase stays connected.
+  /// Firebase sign out is in the hidden admin screen (5-tap logo).
+  void _confirmRoleSignOut() => showDialog<void>(
+    context: context,
+    builder: (_) => AlertDialog(
+      backgroundColor: C.bgCard,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text('Sign Out?', style: GoogleFonts.syne(
+          fontWeight: FontWeight.w800, color: C.white)),
+      content: Text(
+        'You will be returned to the staff PIN screen. '
+        'The app stays connected to the database.',
+        style: GoogleFonts.syne(fontSize: 13, color: C.textMuted, height: 1.5)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel', style: GoogleFonts.syne(color: C.textMuted))),
+        ElevatedButton(
+          onPressed: () {
+            Navigator.of(context).pop();
+            AppUtils.staffLogout(ref);
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: C.yellow, foregroundColor: C.bg,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+          child: Text('Sign Out',
+              style: GoogleFonts.syne(fontWeight: FontWeight.w800))),
+      ],
+    ),
+  );
 
   void _goToPosFromCart() {
     Navigator.of(context).maybePop();

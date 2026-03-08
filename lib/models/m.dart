@@ -26,7 +26,7 @@ class RoleAccess {
   static bool canMarkVip(String role)         => _any(role, ['admin','manager']);
 
   // ── Inventory permissions ───────────────────────────────────
-  static bool canViewInventory(String role)   => _any(role, ['admin','manager','technician']);
+  static bool canViewInventory(String role)   => _any(role, ['admin','manager','technician','reception']);
   static bool canCreateProduct(String role)   => _any(role, ['admin','manager']);
   static bool canEditProduct(String role)     => _any(role, ['admin','manager']);
   static bool canDeleteProduct(String role)   => _any(role, ['admin']);
@@ -34,7 +34,7 @@ class RoleAccess {
 
   // ── Invoice / Transaction permissions ──────────────────────
   static bool canCreateInvoice(String role)   => _any(role, ['admin','manager','reception']);
-  static bool canViewInvoices(String role)    => _any(role, ['admin','manager','reception']);
+  static bool canViewInvoices(String role)    => _any(role, ['admin','manager','reception','technician']);
   static bool canProcessPayment(String role)  => _any(role, ['admin','manager','reception']);
   static bool canRefund(String role)          => _any(role, ['admin','manager']);
   static bool canViewTransactions(String role)=> _any(role, ['admin','manager']);
