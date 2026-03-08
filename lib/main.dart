@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -73,7 +74,6 @@ class _AuthGate extends ConsumerStatefulWidget {
 class _AuthGateState extends ConsumerState<_AuthGate> {
   String _ownerUid    = '';
   String _ownerShopId = '';
-  bool   _loaded      = false;
   bool   _repairDone  = false;  // ensures repair dialog only shows once
 
   @override
@@ -95,7 +95,6 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         setState(() {
           _ownerUid    = uid;
           _ownerShopId = shopId;
-          _loaded      = true;
         });
 
         // Trigger staff reload now that we have a real shopId.
@@ -109,7 +108,7 @@ class _AuthGateState extends ConsumerState<_AuthGate> {
         _maybeRepair();
       }
     } catch (_) {
-      if (mounted) setState(() => _loaded = true);
+      // ignore load errors — app will show login screen
     }
   }
 
@@ -176,11 +175,19 @@ class _RootShellState extends ConsumerState<RootShell> {
   bool _initialized = false;
   String _initializedShopId = '';
   String? _cachedShopId;
+  final List<StreamSubscription<dynamic>> _subs = [];
 
   @override
   void initState() {
     super.initState();
     _loadCachedShop();
+  }
+
+  @override
+  void dispose() {
+    for (final sub in _subs) { sub.cancel(); }
+    _subs.clear();
+    super.dispose();
   }
 
   Future<void> _loadCachedShop() async {
@@ -205,9 +212,10 @@ class _RootShellState extends ConsumerState<RootShell> {
     _initializedShopId = shopId;
     try {
       final db = FirebaseDatabase.instance;
-      
+
       // Real-time settings listener
-      db.ref('shops/$shopId').onValue.listen((event) {
+      _subs.add(db.ref('shops/$shopId').onValue.listen((event) {
+        if (!mounted) return;
         if (event.snapshot.exists) {
           final data = Map<String, dynamic>.from(event.snapshot.value as Map);
           ref.read(settingsProvider.notifier).update(
@@ -227,17 +235,14 @@ class _RootShellState extends ConsumerState<RootShell> {
             )
           );
         }
-      });
-      
-      // Real-time staff listener — feeds techsProvider (ALL roles).
-      // TechniciansPage (settings) shows ALL staff regardless of role.
-      // Job-assignment dropdown uses activeTechsProvider which filters
-      // to technician+manager only — see providers.dart activeTechsProvider.
-      db.ref('users')
+      }));
+
+      // Real-time staff listener — feeds staffProvider (ALL roles).
+      _subs.add(db.ref('users')
           .orderByChild('shopId')
           .equalTo(shopId)
           .onValue.listen((event) {
-        // Build StaffMember list directly from snapshot — includes owner + email
+        if (!mounted) return;
         final staffList = <StaffMember>[];
         if (event.snapshot.exists) {
           for (final child in event.snapshot.children) {
@@ -264,20 +269,20 @@ class _RootShellState extends ConsumerState<RootShell> {
             ));
           }
         }
-        // Owner first, then alphabetical
         staffList.sort((a, b) {
           if (a.isOwner) return -1;
           if (b.isOwner) return 1;
           return a.displayName.compareTo(b.displayName);
         });
         ref.read(staffProvider.notifier).setAll(staffList);
-      });
+      }));
 
       // Real-time products listener
-      db.ref('products')
+      _subs.add(db.ref('products')
           .orderByChild('shopId')
           .equalTo(shopId)
           .onValue.listen((event) {
+        if (!mounted) return;
         final products = <Product>[];
         if (event.snapshot.exists) {
           for (final child in event.snapshot.children) {
@@ -303,13 +308,14 @@ class _RootShellState extends ConsumerState<RootShell> {
           }
         }
         ref.read(productsProvider.notifier).setAll(products);
-      });
+      }));
 
       // Real-time jobs listener
-      db.ref('jobs')
+      _subs.add(db.ref('jobs')
           .orderByChild('shopId')
           .equalTo(shopId)
           .onValue.listen((event) {
+        if (!mounted) return;
         final jobs = <Job>[];
         if (event.snapshot.exists) {
           for (final child in event.snapshot.children) {
@@ -319,13 +325,14 @@ class _RootShellState extends ConsumerState<RootShell> {
           jobs.sort((a, b) => b.createdAt.compareTo(a.createdAt));
         }
         ref.read(jobsProvider.notifier).setAll(jobs);
-      });
+      }));
 
       // Real-time customers listener
-      db.ref('customers')
+      _subs.add(db.ref('customers')
           .orderByChild('shopId')
           .equalTo(shopId)
           .onValue.listen((event) {
+        if (!mounted) return;
         final customers = <Customer>[];
         if (event.snapshot.exists) {
           for (final child in event.snapshot.children) {
@@ -334,7 +341,30 @@ class _RootShellState extends ConsumerState<RootShell> {
           }
         }
         ref.read(customersProvider.notifier).setAll(customers);
-      });
+      }));
+
+      // Real-time transactions listener — feeds Dashboard, Sales & Finance KPIs.
+      // Was MISSING — this is why all revenue/transaction cards showed zero.
+      _subs.add(db.ref('transactions')
+          .orderByChild('shopId')
+          .equalTo(shopId)
+          .onValue.listen((event) {
+        if (!mounted) return;
+        final txs = <Map<String, dynamic>>[];
+        if (event.snapshot.exists) {
+          for (final child in event.snapshot.children) {
+            final data = Map<String, dynamic>.from(child.value as Map);
+            txs.add(data);
+          }
+          // Sort newest-first so reports see most-recent entries first
+          txs.sort((a, b) {
+            final at = (a['time'] as num?)?.toInt() ?? 0;
+            final bt = (b['time'] as num?)?.toInt() ?? 0;
+            return bt.compareTo(at);
+          });
+        }
+        ref.read(transactionsProvider.notifier).state = txs;
+      }));
 
       if (mounted) setState(() {});
     } catch (e) {

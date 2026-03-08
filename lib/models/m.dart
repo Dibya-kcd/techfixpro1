@@ -241,6 +241,11 @@ class Job {
   String? warrantyExpiry;
   String? invoiceId;
   String updatedAt;
+  // ── Payment ──────────────────────────────────────────────────
+  String paymentStatus;   // 'Unpaid' | 'Paid' | 'Partial'
+  String paymentMethod;   // 'Cash' | 'UPI' | 'Card' | 'Bank Transfer'
+  double amountPaid;
+  String? paidAt;         // ISO timestamp when payment was collected
 
   Job({
     required this.jobId, required this.jobNumber, required this.shopId,
@@ -260,6 +265,10 @@ class Job {
     this.notificationSent = false, this.notificationChannel = 'WhatsApp',
     this.reopenCount = 0, this.warrantyExpiry, this.invoiceId,
     required this.updatedAt,
+    this.paymentStatus = 'Unpaid',
+    this.paymentMethod = 'Cash',
+    this.amountPaid = 0.0,
+    this.paidAt,
   });
 
   double get subtotal => laborCost + partsCost;
@@ -294,6 +303,8 @@ class Job {
     List<TimelineEntry>? timeline, bool? notificationSent,
     String? notificationChannel, int? reopenCount,
     String? warrantyExpiry, String? invoiceId, String? updatedAt,
+    String? paymentStatus, String? paymentMethod,
+    double? amountPaid, String? paidAt,
   }) => Job(
     jobId: jobId ?? this.jobId, jobNumber: jobNumber ?? this.jobNumber,
     shopId: shopId ?? this.shopId, customerId: customerId ?? this.customerId,
@@ -325,6 +336,10 @@ class Job {
     warrantyExpiry: warrantyExpiry ?? this.warrantyExpiry,
     invoiceId: invoiceId ?? this.invoiceId,
     updatedAt: updatedAt ?? this.updatedAt,
+    paymentStatus: paymentStatus ?? this.paymentStatus,
+    paymentMethod: paymentMethod ?? this.paymentMethod,
+    amountPaid: amountPaid ?? this.amountPaid,
+    paidAt: paidAt ?? this.paidAt,
   );
 
   factory Job.fromMap(Map<String, dynamic> data) => Job(
@@ -374,6 +389,10 @@ class Job {
     warrantyExpiry: data['warrantyExpiry'] as String?,
     invoiceId: data['invoiceId'] as String?,
     updatedAt: (data['updatedAt'] as String?) ?? '',
+    paymentStatus: (data['paymentStatus'] as String?) ?? 'Unpaid',
+    paymentMethod: (data['paymentMethod'] as String?) ?? 'Cash',
+    amountPaid: (data['amountPaid'] as num?)?.toDouble() ?? 0.0,
+    paidAt: data['paidAt'] as String?,
   );
 }
 

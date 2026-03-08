@@ -56,39 +56,7 @@ class _RepairsState extends ConsumerState<RepairsScreen> {
           final value = child.value;
           if (key == null || value is! Map) continue;
           final data = Map<String, dynamic>.from(value);
-          list.add(Job(
-            jobId: key,
-            jobNumber: (data['jobNumber'] as String?) ?? (data['num'] as String?) ?? '',
-            shopId: (data['shopId'] as String?) ?? shopId,
-            customerId: (data['customerId'] as String?) ?? '',
-            customerName: (data['customerName'] as String?) ?? '',
-            customerPhone: (data['customerPhone'] as String?) ?? '',
-            brand: (data['brand'] as String?) ?? '',
-            model: (data['model'] as String?) ?? '',
-            imei: (data['imei'] as String?) ?? '',
-            color: (data['color'] as String?) ?? '',
-            problem: (data['problem'] as String?) ?? '',
-            notes: (data['notes'] as String?) ?? '',
-            status: (data['status'] as String?) ?? 'Checked In',
-            previousStatus: data['previousStatus'] as String?,
-            holdReason: data['holdReason'] as String?,
-            priority: (data['priority'] as String?) ?? 'Normal',
-            technicianId: (data['technicianId'] as String?) ?? (data['techId'] as String?) ?? '',
-            technicianName: (data['technicianName'] as String?) ?? (data['techName'] as String?) ?? 'Unassigned',
-            laborCost: (data['laborCost'] as num?)?.toDouble() ?? 0,
-            partsCost: (data['partsCost'] as num?)?.toDouble() ?? 0,
-            discountAmount: (data['discountAmount'] as num?)?.toDouble() ?? (data['discount'] as num?)?.toDouble() ?? 0,
-            totalAmount: (data['totalAmount'] as num?)?.toDouble() ?? (data['total'] as num?)?.toDouble() ?? 0,
-            partsUsed: const [],
-            intakePhotos: const [],
-            completionPhotos: const [],
-            timeline: const [],
-            notificationSent: (data['notificationSent'] as bool?) ?? false,
-            reopenCount: (data['reopenCount'] as int?) ?? 0,
-            estimatedEndDate: (data['estimatedEndDate'] as String?) ?? '',
-            createdAt: (data['createdAt'] as String?) ?? DateTime.now().toIso8601String(),
-            updatedAt: (data['updatedAt'] as String?) ?? DateTime.now().toIso8601String(),
-          ));
+          list.add(Job.fromMap({...data, 'jobId': key}));
         }
       }
       // Merge with any optimistic jobs already in the provider (e.g. from addJob).

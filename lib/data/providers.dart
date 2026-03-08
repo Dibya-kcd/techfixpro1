@@ -504,57 +504,191 @@ class JobsNotifier extends StateNotifier<List<Job>> {
   void addJob(Job j) => state = [j, ...state];
   void updateJob(Job u) =>
       state = state.map((j) => j.jobId == u.jobId ? u : j).toList();
-  void addTimelineNote(String id, String note, String by) {
+  // ── addTimelineNote ──────────────────────────────────────────
+  Future<void> addTimelineNote(String id, String note, String by) async {
+    final now = DateTime.now().toIso8601String();
+    Job? updated;
     state = state.map((j) {
       if (j.jobId != id) return j;
-      final updated = j.copyWith(
+      updated = j.copyWith(
         timeline: [
           ...j.timeline,
-          TimelineEntry(status: j.status, time: DateTime.now().toIso8601String(),
-              by: by, note: note, type: 'note')
+          TimelineEntry(status: j.status, time: now, by: by, note: note, type: 'note'),
         ],
-        updatedAt: DateTime.now().toIso8601String(),
+        updatedAt: now,
       );
-      return updated;
+      return updated!;
     }).toList();
+    if (updated == null) return;
+    try {
+      await FirebaseDatabase.instance.ref('jobs/$id').update({
+        'timeline': updated!.timeline.map((e) => {
+          'status': e.status, 'time': e.time, 'by': e.by,
+          'note': e.note, 'type': e.type,
+        }).toList(),
+        'updatedAt': now,
+      });
+    } catch (_) {}
   }
-  void updateStatus(String id, String status, String by,
-      {String note = '', String type = 'flow'}) {
+
+  // ── updateStatus ─────────────────────────────────────────────
+  Future<void> updateStatus(String id, String newStatus, String by,
+      {String note = '', String type = 'flow',
+       String? holdReason, int? reopenCount}) async {
+    final now = DateTime.now().toIso8601String();
+    Job? updated;
     state = state.map((j) {
       if (j.jobId != id) return j;
       final entry = TimelineEntry(
-          status: status, time: DateTime.now().toIso8601String(),
-          by: by, note: note, type: type);
-      return j.copyWith(
-        status: status,
+          status: newStatus, time: now, by: by, note: note, type: type);
+      updated = j.copyWith(
+        status: newStatus,
         previousStatus: j.status,
+        holdReason: holdReason,
         timeline: [...j.timeline, entry],
-        updatedAt: DateTime.now().toIso8601String(),
+        reopenCount: reopenCount ?? j.reopenCount,
+        updatedAt: now,
       );
+      return updated!;
     }).toList();
+    if (updated == null) return;
+    try {
+      await FirebaseDatabase.instance.ref('jobs/$id').update({
+        'status':         newStatus,
+        'previousStatus': updated!.previousStatus,
+        'holdReason':     holdReason,
+        'reopenCount':    updated!.reopenCount,
+        'timeline': updated!.timeline.map((e) => {
+          'status': e.status, 'time': e.time, 'by': e.by,
+          'note': e.note, 'type': e.type,
+        }).toList(),
+        'updatedAt': now,
+      });
+    } catch (_) {}
   }
-  void markNotified(String id, String via) {
+
+  // ── markNotified ─────────────────────────────────────────────
+  Future<void> markNotified(String id, String via) async {
+    final now = DateTime.now().toIso8601String();
+    Job? updated;
     state = state.map((j) {
       if (j.jobId != id) return j;
-      return j.copyWith(
+      updated = j.copyWith(
         notificationSent: true,
         notificationChannel: via,
         timeline: [...j.timeline,
-          TimelineEntry(status: j.status, time: DateTime.now().toIso8601String(),
-              by: 'System', note: 'Pickup notification sent via $via', type: 'note')
+          TimelineEntry(status: j.status, time: now,
+              by: 'System', note: 'Pickup notification sent via $via', type: 'note'),
         ],
-        updatedAt: DateTime.now().toIso8601String(),
+        updatedAt: now,
+      );
+      return updated!;
+    }).toList();
+    if (updated == null) return;
+    try {
+      await FirebaseDatabase.instance.ref('jobs/$id').update({
+        'notificationSent':    true,
+        'notificationChannel': via,
+        'timeline': updated!.timeline.map((e) => {
+          'status': e.status, 'time': e.time, 'by': e.by,
+          'note': e.note, 'type': e.type,
+        }).toList(),
+        'updatedAt': now,
+      });
+    } catch (_) {}
+  }
+
+  // ── Convenience wrappers ─────────────────────────────────────
+  Future<void> putOnHold(String id, String reason, String by) =>
+      updateStatus(id, 'On Hold', by,
+          note: reason, type: 'flow', holdReason: reason);
+
+  Future<void> cancel(String id, String reason, String by) =>
+      updateStatus(id, 'Cancelled', by,
+          note: reason, type: 'flow', holdReason: null);
+
+  Future<void> reopen(String id, String reason, String by) {
+    final job = state.firstWhere((j) => j.jobId == id,
+        orElse: () => throw StateError('Job $id not found'));
+    return updateStatus(id, 'In Repair', by,
+        note: reason, type: 'flow',
+        holdReason: null,
+        reopenCount: job.reopenCount + 1);
+  }
+
+  Future<void> resumeFromHold(String id, String by) =>
+      updateStatus(id, 'In Repair', by,
+          type: 'flow', holdReason: null);
+
+  // ── collectPayment ───────────────────────────────────────────
+  /// Marks a repair job as paid. Writes to jobs/, invoices/ (if saved),
+  /// and transactions/ so Dashboard + Reports KPIs update automatically.
+  Future<void> collectPayment({
+    required String jobId,
+    required String shopId,
+    required double amount,
+    required String method,       // 'Cash' | 'UPI' | 'Card' | 'Bank Transfer'
+    required String collectedBy,
+    String? invoiceId,
+  }) async {
+    final now    = DateTime.now();
+    final nowIso = now.toIso8601String();
+    final db     = FirebaseDatabase.instance;
+    final txId   = 'repair_tx_${now.millisecondsSinceEpoch}';
+
+    final batch = <String, dynamic>{
+      'jobs/$jobId/paymentStatus': 'Paid',
+      'jobs/$jobId/paymentMethod': method,
+      'jobs/$jobId/amountPaid':    amount,
+      'jobs/$jobId/paidAt':        nowIso,
+      'jobs/$jobId/status':        'Delivered',
+      'jobs/$jobId/updatedAt':     nowIso,
+      'transactions/$txId': {
+        'shopId':      shopId,
+        'jobId':       jobId,
+        'type':        'repair',
+        'productId':   '',
+        'productName': 'Repair Service',
+        'qty':         1,
+        'price':       amount,
+        'cost':        0.0,
+        'total':       amount,
+        'payment':     method,
+        'time':        now.millisecondsSinceEpoch,
+        'collectedBy': collectedBy,
+      },
+    };
+    if (invoiceId != null && invoiceId.isNotEmpty) {
+      batch['invoices/$invoiceId/paymentStatus'] = 'Paid';
+      batch['invoices/$invoiceId/paymentMethod'] = method;
+      batch['invoices/$invoiceId/amountPaid']    = amount;
+      batch['invoices/$invoiceId/balanceDue']    = 0.0;
+      batch['invoices/$invoiceId/paidAt']        = nowIso;
+    }
+    await db.ref().update(batch);
+
+    state = state.map((j) {
+      if (j.jobId != jobId) return j;
+      return j.copyWith(
+        paymentStatus: 'Paid',
+        paymentMethod: method,
+        amountPaid:    amount,
+        paidAt:        nowIso,
+        status:        'Delivered',
+        previousStatus: j.status,
+        timeline: [
+          ...j.timeline,
+          TimelineEntry(
+            status: 'Delivered', time: nowIso, by: collectedBy,
+            note: 'Payment collected · $method · ₹${amount.toStringAsFixed(0)}',
+            type: 'flow',
+          ),
+        ],
+        updatedAt: nowIso,
       );
     }).toList();
   }
-  void putOnHold(String id, String reason, String by) =>
-      updateStatus(id, 'On Hold', by, note: reason, type: 'flow');
-  void cancel(String id, String reason, String by) =>
-      updateStatus(id, 'Cancelled', by, note: reason, type: 'flow');
-  void reopen(String id, String reason, String by) =>
-      updateStatus(id, 'Checked In', by, note: reason, type: 'flow');
-  void resumeFromHold(String id, String by) =>
-      updateStatus(id, 'In Repair', by, type: 'flow');
+
   void reapplyTaxToActiveJobs(double taxRatePct, {bool priceInclusive = false}) {
     state = state.map((j) {
       if (j.status == 'Cancelled' || j.status == 'Completed') return j;

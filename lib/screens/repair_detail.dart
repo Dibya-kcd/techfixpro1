@@ -98,46 +98,78 @@ class _RDState extends ConsumerState<RepairDetailScreen>
             job.copyWith(invoiceId: invId, updatedAt: DateTime.now().toIso8601String()));
           return invNo;
         },
+        onCollectPayment: (method) async {
+          final active = ref.read(activeSessionProvider);
+          final stream = ref.read(currentUserProvider).asData?.value;
+          final role = (active?.role.isNotEmpty == true)
+              ? active!.role
+              : (stream?.role ?? 'technician');
+          if (!RoleAccess.canProcessPayment(role)) return false;
+          final collectedBy = active?.displayName.isNotEmpty == true
+              ? active!.displayName
+              : (stream?.displayName ?? 'Staff');
+          // Use latest job from provider so invoiceId is current
+          final latestJob = ref.read(jobsProvider)
+              .firstWhere((j) => j.jobId == job.jobId, orElse: () => job);
+          await ref.read(jobsProvider.notifier).collectPayment(
+            jobId:       latestJob.jobId,
+            shopId:      latestJob.shopId,
+            amount:      grandTotal,
+            method:      method,
+            collectedBy: collectedBy,
+            invoiceId:   latestJob.invoiceId,
+          );
+          return true;
+        },
         buildPdf: () => _buildPdf(job, s),
       ),
     );
   }
 
+
   Future<Uint8List> _buildPdf(Job job, ShopSettings s) async {
+    // Roboto supports ₹ (U+20B9); default Helvetica does not → renders as junk
+    final ttf     = await PdfGoogleFonts.robotoRegular();
+    final ttfBold = await PdfGoogleFonts.robotoBold();
+    final base  = pw.TextStyle(font: ttf,     fontSize: 10);
+    final bold  = pw.TextStyle(font: ttfBold, fontSize: 10, fontWeight: pw.FontWeight.bold);
+    final title = pw.TextStyle(font: ttfBold, fontSize: 20, fontWeight: pw.FontWeight.bold);
+    final head  = pw.TextStyle(font: ttfBold, fontSize: 18, fontWeight: pw.FontWeight.bold);
+    final total = pw.TextStyle(font: ttfBold, fontSize: 11, fontWeight: pw.FontWeight.bold);
+
     final doc = pw.Document();
     final items = [
       ...job.partsUsed.map((p) => {'name': p.name, 'qty': p.quantity, 'price': p.price, 'total': p.price * p.quantity}),
       {'name': 'Labor', 'qty': 1, 'price': job.laborCost, 'total': job.laborCost},
     ];
-    final subtotal = job.partsCost + job.laborCost;
-    final discount = job.discountAmount;
-    final taxable = subtotal - discount;
-    final taxRate = s.defaultTaxRate;
+    final subtotal  = job.partsCost + job.laborCost;
+    final discount  = job.discountAmount;
+    final taxable   = subtotal - discount;
+    final taxRate   = s.defaultTaxRate;
     final taxAmount = s.settings['taxType'] == 'No Tax' ? 0.0 : taxable * taxRate / 100;
-    final total = taxable + taxAmount;
+    final grandTotal = taxable + taxAmount;
+
     doc.addPage(pw.MultiPage(
-      pageTheme: const pw.PageTheme(
-        margin: pw.EdgeInsets.all(24),
-      ),
+      pageTheme: const pw.PageTheme(margin: pw.EdgeInsets.all(24)),
       build: (context) => [
-        pw.Text(s.shopName.isEmpty ? 'TechFix Pro' : s.shopName, style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
+        pw.Text(s.shopName.isEmpty ? 'TechFix Pro' : s.shopName, style: title),
         pw.SizedBox(height: 4),
-        pw.Text(s.address),
-        pw.Text(s.phone),
+        if (s.address.isNotEmpty) pw.Text(s.address, style: base),
+        if (s.phone.isNotEmpty)   pw.Text(s.phone,   style: base),
         pw.SizedBox(height: 12),
-        pw.Text('Invoice', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+        pw.Text('Invoice', style: head),
         pw.SizedBox(height: 6),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
           pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-            pw.Text('Customer: ${job.customerName}'),
-            pw.Text('Phone: ${job.customerPhone}'),
-            pw.Text('Job #: ${job.jobNumber}'),
-            pw.Text('Device: ${job.brand} ${job.model}'),
-            pw.Text('IMEI: ${job.imei}'),
+            pw.Text('Customer: ${job.customerName}', style: base),
+            pw.Text('Phone: ${job.customerPhone}',   style: base),
+            pw.Text('Job #: ${job.jobNumber}',        style: base),
+            pw.Text('Device: ${job.brand} ${job.model}', style: base),
+            if (job.imei.isNotEmpty) pw.Text('IMEI: ${job.imei}', style: base),
           ]),
           pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.end, children: [
-            pw.Text('Date: ${DateTime.now().toIso8601String().substring(0,10)}'),
-            pw.Text('Tax: ${taxRate.toStringAsFixed(0)}%'),
+            pw.Text('Date: ${DateTime.now().toIso8601String().substring(0, 10)}', style: base),
+            pw.Text('Tax: ${taxRate.toStringAsFixed(0)}%', style: base),
           ]),
         ]),
         pw.SizedBox(height: 12),
@@ -151,16 +183,16 @@ class _RDState extends ConsumerState<RepairDetailScreen>
           },
           children: [
             pw.TableRow(children: [
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Item', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Qty', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Price', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Total', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Item',  style: bold)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Qty',   style: bold)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Price', style: bold)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('Total', style: bold)),
             ]),
             ...items.map((it) => pw.TableRow(children: [
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(it['name'].toString())),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(it['qty'].toString())),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('₹${(it['price'] as num).toStringAsFixed(2)}')),
-              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('₹${(it['total'] as num).toStringAsFixed(2)}')),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(it['name'].toString(), style: base)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text(it['qty'].toString(),  style: base)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('\u20B9${(it['price'] as num).toStringAsFixed(2)}', style: base)),
+              pw.Padding(padding: const pw.EdgeInsets.all(6), child: pw.Text('\u20B9${(it['total'] as num).toStringAsFixed(2)}', style: base)),
             ])),
           ],
         ),
@@ -168,24 +200,28 @@ class _RDState extends ConsumerState<RepairDetailScreen>
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.end, children: [
           pw.Container(width: 280, child: pw.Column(children: [
             pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text('Subtotal'), pw.Text('₹${subtotal.toStringAsFixed(2)}'),
+              pw.Text('Subtotal', style: base),
+              pw.Text('\u20B9${subtotal.toStringAsFixed(2)}', style: base),
             ]),
-            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text('Discount'), pw.Text('-₹${discount.toStringAsFixed(2)}'),
-            ]),
+            if (discount > 0)
+              pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+                pw.Text('Discount', style: base),
+                pw.Text('-\u20B9${discount.toStringAsFixed(2)}', style: base),
+              ]),
             if (taxAmount > 0)
               pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                pw.Text('Tax (${taxRate.toStringAsFixed(0)}%)'), pw.Text('₹${taxAmount.toStringAsFixed(2)}'),
+                pw.Text('Tax (${taxRate.toStringAsFixed(0)}%)', style: base),
+                pw.Text('\u20B9${taxAmount.toStringAsFixed(2)}', style: base),
               ]),
             pw.Divider(),
             pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-              pw.Text('Total', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-              pw.Text('₹${total.toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+              pw.Text('Total', style: total),
+              pw.Text('\u20B9${grandTotal.toStringAsFixed(2)}', style: total),
             ]),
           ])),
         ]),
         pw.SizedBox(height: 20),
-        pw.Text('Thank you!', style: const pw.TextStyle(fontSize: 12)),
+        pw.Text('Thank you!', style: base),
       ],
     ));
     return doc.save();
@@ -762,7 +798,7 @@ class _OverviewTab extends ConsumerWidget {
       ])),
       const SizedBox(height: 12),
       CostSummary(parts: job.partsCost, labor: job.laborCost, discount: job.discountAmount,
-          taxRate: ref.read(settingsProvider).defaultTaxRate),
+          taxRate: ref.watch(settingsProvider).defaultTaxRate),
       const SizedBox(height: 16),
       PBtn(
         label: '📄 Invoice & Print',
@@ -1185,7 +1221,9 @@ class _EditTabState extends ConsumerState<_EditTab>
     _parts = TextEditingController(text: j.partsCost.toStringAsFixed(0));
     _labor = TextEditingController(text: j.laborCost.toStringAsFixed(0));
     _discount = TextEditingController(text: j.discountAmount.toStringAsFixed(0));
-    _tax = TextEditingController(text: j.taxAmount.toStringAsFixed(0));
+    // _tax shows the GST % rate (from settings), NOT the ₹ tax amount
+    final taxRate = ref.read(settingsProvider).defaultTaxRate;
+    _tax = TextEditingController(text: taxRate.toStringAsFixed(0));
     _start = TextEditingController(text: j.createdAt.split('T')[0]);
     _end = TextEditingController(text: j.estimatedEndDate);
     _priority = j.priority;
@@ -1221,7 +1259,7 @@ class _EditTabState extends ConsumerState<_EditTab>
     final labor = double.tryParse(_labor.text) ?? 0;
     final parts = widget.job.partsCost;
     final disc = double.tryParse(_discount.text) ?? 0;
-    // Derive rate from provider — _tax.text holds the ₹ amount not %
+    // Always derive tax rate from settings provider (not from _tax controller)
     final taxRate = ref.read(settingsProvider).defaultTaxRate;
     
     final subtotal = labor + parts;
@@ -1278,7 +1316,6 @@ class _EditTabState extends ConsumerState<_EditTab>
     final parts = double.tryParse(_parts.text) ?? 0;
     final labor = double.tryParse(_labor.text) ?? 0;
     final disc = double.tryParse(_discount.text) ?? 0;
-    final tax = double.tryParse(_tax.text) ?? 0;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
@@ -1335,9 +1372,10 @@ class _EditTabState extends ConsumerState<_EditTab>
               keyboardType: TextInputType.number)),
           const SizedBox(width: 10),
           Expanded(child: AppField(label: 'Tax Rate %', controller: _tax,
+              readOnly: true, hint: 'Set in Settings',
               keyboardType: TextInputType.number)),
         ]),
-        StatefulBuilder(builder: (_, ss) => CostSummary(parts: parts, labor: labor, discount: disc, taxRate: tax)),
+        StatefulBuilder(builder: (_, ss) => CostSummary(parts: parts, labor: labor, discount: disc, taxRate: ref.read(settingsProvider).defaultTaxRate)),
         const SizedBox(height: 16),
         PBtn(label: _saved ? '✅ Saved!' : '💾 Save Changes', onTap: _save, full: true,
             color: _saved ? C.green : C.primary),
@@ -1627,6 +1665,7 @@ class _RepairInvoiceSheet extends StatefulWidget {
   final double taxAmt;
   final double grandTotal;
   final Future<String?> Function() onSaveToFirebase;
+  final Future<bool> Function(String method) onCollectPayment;
   final Future<Uint8List> Function() buildPdf;
 
   const _RepairInvoiceSheet({
@@ -1638,6 +1677,7 @@ class _RepairInvoiceSheet extends StatefulWidget {
     required this.taxAmt,
     required this.grandTotal,
     required this.onSaveToFirebase,
+    required this.onCollectPayment,
     required this.buildPdf,
   });
 
@@ -1648,7 +1688,19 @@ class _RepairInvoiceSheet extends StatefulWidget {
 class _RepairInvoiceSheetState extends State<_RepairInvoiceSheet> {
   bool _saving = false;
   bool _printing = false;
+  bool _collecting = false;
   String? _savedInvNo;
+  bool _paid = false;
+  String _selectedMethod = 'Cash'; // default payment method
+
+  // Payment method options
+  static const _methods = ['Cash', 'UPI', 'Card', 'Bank Transfer'];
+  static const _methodIcons = {
+    'Cash': '💵',
+    'UPI': '📲',
+    'Card': '💳',
+    'Bank Transfer': '🏦',
+  };
 
   Future<void> _save() async {
     if (_saving || _savedInvNo != null) return;
@@ -1658,6 +1710,28 @@ class _RepairInvoiceSheetState extends State<_RepairInvoiceSheet> {
       if (mounted) setState(() => _savedInvNo = invNo);
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _collectPayment() async {
+    if (_collecting || _paid) return;
+    setState(() => _collecting = true);
+    try {
+      final success = await widget.onCollectPayment(_selectedMethod);
+      if (mounted && success) {
+        setState(() => _paid = true);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            '✅ Payment collected · $_selectedMethod · ${fmtMoney(widget.grandTotal)}',
+            style: GoogleFonts.syne(fontWeight: FontWeight.w700),
+          ),
+          backgroundColor: C.green,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _collecting = false);
     }
   }
 
@@ -1910,21 +1984,126 @@ class _RepairInvoiceSheetState extends State<_RepairInvoiceSheet> {
                         ],
                       ),
                       const SizedBox(height: 12),
-                      // Payment status pill
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        decoration: BoxDecoration(
-                          color: C.yellow.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: C.yellow.withValues(alpha: 0.3)),
+                      // ── Payment status / collect section ──────
+                      if (_paid || widget.job.paymentStatus == 'Paid')
+                        // Already paid — show green confirmation badge
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 12, horizontal: 14),
+                          decoration: BoxDecoration(
+                            color: C.green.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: C.green.withValues(alpha: 0.35)),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.check_circle,
+                                  size: 18, color: C.green),
+                              const SizedBox(width: 8),
+                              Text(
+                                '✅ Paid · ${_paid ? _selectedMethod : widget.job.paymentMethod}',
+                                style: GoogleFonts.syne(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w800,
+                                    color: C.green),
+                              ),
+                            ],
+                          ),
+                        )
+                      else ...[
+                        // Payment method selector
+                        Text('PAYMENT METHOD',
+                            style: GoogleFonts.syne(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700,
+                                color: C.textMuted,
+                                letterSpacing: 0.8)),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: _methods.map((m) {
+                            final sel = _selectedMethod == m;
+                            return Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: GestureDetector(
+                                  onTap: () =>
+                                      setState(() => _selectedMethod = m),
+                                  child: AnimatedContainer(
+                                    duration:
+                                        const Duration(milliseconds: 150),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: sel
+                                          ? C.green.withValues(alpha: 0.12)
+                                          : C.bgElevated,
+                                      borderRadius:
+                                          BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: sel ? C.green : C.border,
+                                        width: sel ? 2 : 1,
+                                      ),
+                                    ),
+                                    child: Column(children: [
+                                      Text(
+                                          _methodIcons[m] ?? '💰',
+                                          style: const TextStyle(
+                                              fontSize: 16)),
+                                      const SizedBox(height: 2),
+                                      Text(m,
+                                          textAlign: TextAlign.center,
+                                          style: GoogleFonts.syne(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w700,
+                                              color: sel
+                                                  ? C.green
+                                                  : C.textMuted)),
+                                    ]),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
                         ),
-                        child: Text('⏳ Payment Pending',
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.syne(fontSize: 12,
-                                fontWeight: FontWeight.w700, color: C.yellow)),
-                      ),
+                        const SizedBox(height: 12),
+                        // Collect Payment button
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed:
+                                _collecting ? null : _collectPayment,
+                            icon: _collecting
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2.5,
+                                        color: Colors.white))
+                                : const Icon(Icons.payments_outlined,
+                                    size: 18),
+                            label: Text(
+                              _collecting
+                                  ? 'Processing…'
+                                  : 'Collect ${fmtMoney(widget.grandTotal)} · $_selectedMethod',
+                              style: GoogleFonts.syne(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: C.green,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              elevation: 0,
+                            ),
+                          ),
+                        ),
+                      ],
                     ]),
                   ),
                   const SizedBox(height: 24),

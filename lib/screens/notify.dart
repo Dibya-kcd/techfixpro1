@@ -222,6 +222,7 @@ class _NotifySheetState extends ConsumerState<NotifySheet> {
   }
 
   void _send() {
+    // markNotified is now async (writes to Firebase) but UI doesn't need to wait
     ref.read(jobsProvider.notifier).markNotified(widget.job.jobId, _channel);
     Navigator.of(context).pop();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(

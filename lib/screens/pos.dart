@@ -678,8 +678,18 @@ class _PosReceiptSheetState extends State<_PosReceiptSheet> {
       widget.cart.fold(0.0, (s, c) => s + c.product.sellingPrice * c.qty);
 
   Future<Uint8List> _buildReceiptPdf() async {
+    // Roboto supports ₹ (U+20B9); default Helvetica does not → renders as junk
+    final ttf     = await PdfGoogleFonts.robotoRegular();
+    final ttfBold = await PdfGoogleFonts.robotoBold();
+    final base  = pw.TextStyle(font: ttf,     fontSize: 10);
+    final sm    = pw.TextStyle(font: ttf,     fontSize: 10);
+    final med   = pw.TextStyle(font: ttf,     fontSize: 11);
+    final bold  = pw.TextStyle(font: ttfBold, fontSize: 11, fontWeight: pw.FontWeight.bold);
+    final title = pw.TextStyle(font: ttfBold, fontSize: 18, fontWeight: pw.FontWeight.bold);
+    final totSt = pw.TextStyle(font: ttfBold, fontSize: 14, fontWeight: pw.FontWeight.bold);
+
     final doc = pw.Document();
-    final s = widget.settings;
+    final s   = widget.settings;
     final now = DateTime.now();
     final dateStr =
         '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
@@ -690,60 +700,49 @@ class _PosReceiptSheetState extends State<_PosReceiptSheet> {
       build: (ctx) => pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Text(s.shopName.isEmpty ? 'TechFix Pro' : s.shopName,
-              style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
-          if (s.address.isNotEmpty) pw.Text(s.address, style: const pw.TextStyle(fontSize: 10)),
-          if (s.phone.isNotEmpty) pw.Text(s.phone, style: const pw.TextStyle(fontSize: 10)),
+          pw.Text(s.shopName.isEmpty ? 'TechFix Pro' : s.shopName, style: title),
+          if (s.address.isNotEmpty) pw.Text(s.address, style: sm),
+          if (s.phone.isNotEmpty)   pw.Text(s.phone,   style: sm),
           pw.SizedBox(height: 12),
           pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-            pw.Text('RECEIPT', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
-            pw.Text('#$receiptNo', style: const pw.TextStyle(fontSize: 11)),
+            pw.Text('RECEIPT', style: bold),
+            pw.Text('#$receiptNo', style: med),
           ]),
-          pw.Text('Date: $dateStr · Payment: ${widget.payment}',
-              style: const pw.TextStyle(fontSize: 10)),
+          pw.Text('Date: $dateStr · Payment: ${widget.payment}', style: sm),
           pw.SizedBox(height: 10),
           pw.Divider(),
-          // Items
           ...widget.cart.map((item) => pw.Row(
             mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
             children: [
               pw.Expanded(child: pw.Text(
-                  '${item.product.productName} ×${item.qty}',
-                  style: const pw.TextStyle(fontSize: 11))),
+                  '${item.product.productName} \u00D7${item.qty}', style: med)),
               pw.Text(
-                  '₹${(item.product.sellingPrice * item.qty).toStringAsFixed(2)}',
-                  style: const pw.TextStyle(fontSize: 11)),
+                  '\u20B9${(item.product.sellingPrice * item.qty).toStringAsFixed(2)}',
+                  style: med),
             ],
           )),
           pw.Divider(),
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-              children: [
-            pw.Text('Subtotal'),
-            pw.Text('₹${_subtotal.toStringAsFixed(2)}'),
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('Subtotal', style: base),
+            pw.Text('\u20B9${_subtotal.toStringAsFixed(2)}', style: base),
           ]),
           if (widget.discAmt > 0)
-            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-              pw.Text('Discount'),
-              pw.Text('-₹${widget.discAmt.toStringAsFixed(2)}'),
+            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+              pw.Text('Discount', style: base),
+              pw.Text('-\u20B9${widget.discAmt.toStringAsFixed(2)}', style: base),
             ]),
           if (widget.taxType != 'No Tax')
-            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-              pw.Text('${widget.taxType} ${widget.taxRate.toStringAsFixed(0)}%'),
-              pw.Text('₹${widget.taxAmt.toStringAsFixed(2)}'),
+            pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+              pw.Text('${widget.taxType} ${widget.taxRate.toStringAsFixed(0)}%', style: base),
+              pw.Text('\u20B9${widget.taxAmt.toStringAsFixed(2)}', style: base),
             ]),
           pw.Divider(),
-          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-              children: [
-            pw.Text('TOTAL',
-                style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
-            pw.Text('₹${widget.total.toStringAsFixed(2)}',
-                style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+          pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+            pw.Text('TOTAL', style: totSt),
+            pw.Text('\u20B9${widget.total.toStringAsFixed(2)}', style: totSt),
           ]),
           pw.SizedBox(height: 16),
-          pw.Center(child: pw.Text('Thank you for your purchase!',
-              style: const pw.TextStyle(fontSize: 10))),
+          pw.Center(child: pw.Text('Thank you for your purchase!', style: sm)),
         ],
       ),
     ));
