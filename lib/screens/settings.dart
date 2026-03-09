@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:web/web.dart' as web;
-import 'dart:js_interop';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +14,7 @@ import '../models/m.dart';
 import '../theme/t.dart';
 import '../widgets/w.dart';
 import '../data/photo_service.dart';
+import '../utils/download_helper.dart';
 
 Future<void> _shopSave(BuildContext context, WidgetRef ref,
     Future<void> Function() fn, {String successMsg = '✅ Saved'}) async {
@@ -4271,19 +4270,8 @@ class _ExportPageState extends ConsumerState<ExportPage> {
   }
 
   void _download(String csv, String filename) {
-    final bytes = utf8.encode(csv);
-    final blob  = web.Blob(
-      [bytes.toJS].toJS,
-      web.BlobPropertyBag(type: 'text/csv;charset=utf-8;'),
-    );
-    final url = web.URL.createObjectURL(blob);
-    final a   = web.document.createElement('a') as web.HTMLAnchorElement
-      ..href     = url
-      ..download = filename;
-    web.document.body!.append(a);
-    a.click();
-    a.remove();
-    web.URL.revokeObjectURL(url);
+    // Web → browser download  |  Mobile → native share sheet
+    downloadCsv(csv, filename);
   }
 
   // ── Export builders ───────────────────────────────────────
