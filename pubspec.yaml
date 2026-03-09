@@ -29,6 +29,7 @@ dependencies:
   flutter_image_compress: ^2.4.0
   local_auth: ^3.0.1
   mobile_scanner: ^7.2.0      # Camera barcode/QR scanning
+  google_mlkit_text_recognition: ^0.13.1  # On-device OCR (Android/iOS); web-safe stubs
   http: ^1.2.0                # Product lookup API calls
   pdf: ^3.10.7
   printing: ^5.12.0

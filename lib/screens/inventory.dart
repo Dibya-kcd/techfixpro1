@@ -1,10 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
 import '../models/m.dart';
 import '../data/providers.dart';
@@ -483,56 +487,45 @@ class _ProdFormState extends ConsumerState<ProductFormScreen> {
   }
 
   Future<void> _scanBarcode() async {
-    // Open full-screen scanner
     final result = await Navigator.of(context).push<_ScanResult>(
       MaterialPageRoute(builder: (_) => const _BarcodeScannerScreen()),
     );
     if (result == null || !mounted) return;
 
-    // Always fill the SKU field
-    setState(() => _sku.text = result.barcode);
+    // Fill all known fields automatically
+    setState(() {
+      _sku.text = result.barcode;
+      if (result.name.isNotEmpty  && _name.text.isEmpty)        _name.text        = result.name;
+      if (result.brand.isNotEmpty && _brand.text.isEmpty)       _brand.text       = result.brand;
+      if (result.description.isNotEmpty && _description.text.isEmpty) {
+        _description.text = result.description;
+      }
+      if (result.category.isNotEmpty) _cat = result.category;
+    });
 
-    // Show a loading indicator while we fetch product info
-    if (result.productInfo != null) {
-      final info = result.productInfo!;
-      setState(() {
-        if (info.name.isNotEmpty && _name.text.isEmpty) _name.text = info.name;
-        if (info.brand.isNotEmpty && _brand.text.isEmpty) _brand.text = info.brand;
-        if (info.description.isNotEmpty && _description.text.isEmpty) {
-          _description.text = info.description;
-        }
-        if (info.category.isNotEmpty) _cat = info.category;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Row(children: [
-            const Text('✅ ', style: TextStyle(fontSize: 16)),
-            Expanded(child: Text(
-              'Found: ${info.name.isNotEmpty ? info.name : result.barcode}',
-              style: GoogleFonts.syne(fontWeight: FontWeight.w700),
-              overflow: TextOverflow.ellipsis,
-            )),
-          ]),
-          backgroundColor: C.green,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 3),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ));
-      }
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-            '📦 Barcode ${result.barcode} scanned — fill details manually',
-            style: GoogleFonts.syne(fontWeight: FontWeight.w700),
-          ),
-          backgroundColor: C.bgElevated,
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 3),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ));
-      }
-    }
+    final filled = <String>['SKU'];
+    if (result.name.isNotEmpty)        filled.add('Name');
+    if (result.brand.isNotEmpty)       filled.add('Brand');
+    if (result.description.isNotEmpty) filled.add('Description');
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        Text(result.name.isNotEmpty ? '✅ ' : '📦 ',
+            style: const TextStyle(fontSize: 16)),
+        Expanded(child: Text(
+          result.name.isNotEmpty
+              ? 'Auto-filled: ${filled.join(', ')}'
+              : 'Barcode ${result.barcode} scanned — fill details manually',
+          style: GoogleFonts.syne(fontWeight: FontWeight.w700),
+          overflow: TextOverflow.ellipsis,
+        )),
+      ]),
+      backgroundColor: result.name.isNotEmpty ? C.green : C.bgElevated,
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 3),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
   }
 
   void _save() async {
@@ -817,59 +810,47 @@ class _ProdFormState extends ConsumerState<ProductFormScreen> {
       ]);
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  BARCODE SCANNER DATA MODELS
-// ═══════════════════════════════════════════════════════════════
 
-/// Holds a scanned barcode + any product info fetched from the internet
+// ═══════════════════════════════════════════════════════════════
+//  SCAN RESULT — flat model (no nested productInfo)
+// ═══════════════════════════════════════════════════════════════
 class _ScanResult {
   final String barcode;
-  final _ProductLookup? productInfo;
-  const _ScanResult({required this.barcode, this.productInfo});
-}
-
-/// Normalised product data from any lookup API
-class _ProductLookup {
   final String name;
   final String brand;
   final String description;
   final String category;
-
-  const _ProductLookup({
-    this.name = '',
-    this.brand = '',
-    this.description = '',
-    this.category = '',
+  const _ScanResult({
+    required this.barcode,
+    this.name = '', this.brand = '',
+    this.description = '', this.category = '',
   });
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  BARCODE LOOKUP SERVICE
-//  Tries Open Food Facts first, then falls back to UPC Item DB.
-//  Both are free, no API key required.
+//  BARCODE LOOKUP SERVICE  (free, no API key)
+//  Open Food Facts → UPC Item DB → returns name/brand/description
 // ═══════════════════════════════════════════════════════════════
 class _BarcodeLookupService {
-  /// Returns null if nothing found or on network error.
-  static Future<_ProductLookup?> lookup(String barcode) async {
-    // ── Try 1: Open Food Facts (great for consumer electronics too) ──────────
+  static Future<_ScanResult> lookup(String barcode) async {
+    // Try 1: Open Food Facts
     try {
-      final uri = Uri.parse(
-          'https://world.openfoodfacts.org/api/v0/product/$barcode.json');
-      final res = await http.get(uri).timeout(const Duration(seconds: 6));
-      if (res.statusCode == 200) {
-        final json = jsonDecode(res.body) as Map<String, dynamic>;
-        if ((json['status'] as int?) == 1) {
-          final p = json['product'] as Map<String, dynamic>? ?? {};
-          final name = (p['product_name'] as String?) ?? '';
-          final brand = (p['brands'] as String?) ?? '';
-          final desc = (p['generic_name'] as String?)
+      final r = await http.get(
+        Uri.parse('https://world.openfoodfacts.org/api/v0/product/$barcode.json'),
+      ).timeout(const Duration(seconds: 6));
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        if ((j['status'] as int?) == 1) {
+          final p = j['product'] as Map<String, dynamic>? ?? {};
+          final name  = (p['product_name']  as String?) ?? '';
+          final brand = (p['brands']        as String?) ?? '';
+          final desc  = (p['generic_name']  as String?)
               ?? (p['ingredients_text'] as String?)?.split(',').take(3).join(', ')
               ?? '';
           if (name.isNotEmpty || brand.isNotEmpty) {
-            return _ProductLookup(
-              name: name,
-              brand: brand.split(',').first.trim(),
-              description: desc,
+            return _ScanResult(
+              barcode: barcode, name: name,
+              brand: brand.split(',').first.trim(), description: desc,
               category: _guessCategory(name, brand),
             );
           }
@@ -877,67 +858,114 @@ class _BarcodeLookupService {
       }
     } catch (_) {}
 
-    // ── Try 2: UPC Item DB ───────────────────────────────────────────────────
+    // Try 2: UPC Item DB
     try {
-      final uri = Uri.parse('https://api.upcitemdb.com/prod/trial/lookup?upc=$barcode');
-      final res = await http.get(uri,
-          headers: {'Accept': 'application/json'}).timeout(const Duration(seconds: 6));
-      if (res.statusCode == 200) {
-        final json = jsonDecode(res.body) as Map<String, dynamic>;
-        final items = (json['items'] as List<dynamic>?) ?? [];
+      final r = await http.get(
+        Uri.parse('https://api.upcitemdb.com/prod/trial/lookup?upc=$barcode'),
+        headers: {'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 6));
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        final items = (j['items'] as List<dynamic>?) ?? [];
         if (items.isNotEmpty) {
-          final item = items.first as Map<String, dynamic>;
-          final name = (item['title'] as String?) ?? '';
-          final brand = (item['brand'] as String?) ?? '';
-          final desc = (item['description'] as String?) ?? '';
+          final item  = items.first as Map<String, dynamic>;
+          final name  = (item['title']       as String?) ?? '';
+          final brand = (item['brand']        as String?) ?? '';
+          final desc  = (item['description']  as String?) ?? '';
           if (name.isNotEmpty) {
-            return _ProductLookup(
-              name: name,
-              brand: brand,
-              description: desc,
-              category: _guessCategory(name, brand),
+            return _ScanResult(
+              barcode: barcode, name: name, brand: brand,
+              description: desc, category: _guessCategory(name, brand),
             );
           }
         }
       }
     } catch (_) {}
 
-    return null;
+    return _ScanResult(barcode: barcode);
   }
 
-  /// Guess a category from name/brand keywords
   static String _guessCategory(String name, String brand) {
-    final lower = '${name.toLowerCase()} ${brand.toLowerCase()}';
-    if (lower.contains('iphone') || lower.contains('samsung') ||
-        lower.contains('pixel') || lower.contains('oneplus') ||
-        lower.contains('phone') || lower.contains('mobile')) {
+    final l = '${name.toLowerCase()} ${brand.toLowerCase()}';
+    if (l.contains('iphone') || l.contains('samsung') || l.contains('pixel') ||
+        l.contains('oneplus') || l.contains('phone') || l.contains('mobile')) {
       return 'Mobile Phones';
     }
-    if (lower.contains('ipad') || lower.contains('tablet')) return 'Tablets';
-    if (lower.contains('watch') || lower.contains('band') ||
-        lower.contains('earbuds') || lower.contains('airpods')) {
+    if (l.contains('ipad') || l.contains('tablet')) {
+      return 'Tablets';
+    }
+    if (l.contains('watch') || l.contains('band') ||
+        l.contains('earbuds') || l.contains('airpods')) {
       return 'Wearables';
     }
-    if (lower.contains('charger') || lower.contains('cable') ||
-        lower.contains('case') || lower.contains('cover') ||
-        lower.contains('screen protector') || lower.contains('adapter')) {
+    if (l.contains('charger') || l.contains('cable') || l.contains('case') ||
+        l.contains('cover') || l.contains('adapter')) {
       return 'Accessories';
     }
-    if (lower.contains('screen') || lower.contains('battery') ||
-        lower.contains('speaker') || lower.contains('camera') ||
-        lower.contains('flex') || lower.contains('connector')) {
+    if (l.contains('screen') || l.contains('battery') || l.contains('speaker') ||
+        l.contains('camera') || l.contains('flex') || l.contains('connector')) {
       return 'Spare Parts';
     }
-    return 'Spare Parts'; // sensible default for a repair shop
+    return 'Spare Parts';
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  FULL-SCREEN BARCODE SCANNER SCREEN
+//  OCR TEXT PARSER  (shared logic with add_repair)
+//  Extracts product name, brand from recognised text lines.
 // ═══════════════════════════════════════════════════════════════
+class _OcrProductParser {
+  static const _brands = [
+    'Samsung', 'Apple', 'OnePlus', 'Xiaomi', 'Redmi', 'POCO', 'Realme',
+    'Oppo', 'Vivo', 'iQOO', 'Motorola', 'Nokia', 'Sony', 'LG', 'Google',
+    'Huawei', 'Honor', 'Asus', 'Lenovo', 'Tecno', 'Infinix', 'itel',
+  ];
+
+  static ({String name, String brand, String sku, List<String> allLines})
+      parse(List<String> rawLines) {
+    final lines = rawLines.map((l) => l.trim()).where((t) => t.isNotEmpty).toList();
+    String name = '', brand = '', sku = '';
+
+    // Longest non-numeric line is likely the product name
+    final textLines = lines.where((l) => !RegExp(r'^\d+$').hasMatch(l)).toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
+    if (textLines.isNotEmpty) name = textLines.first;
+
+    for (final line in lines) {
+      if (brand.isEmpty) {
+        for (final b in _brands) {
+          if (line.toLowerCase().contains(b.toLowerCase())) { brand = b; break; }
+        }
+      }
+      // SKU / barcode: alphanumeric 6-20 chars that looks like a part number
+      if (sku.isEmpty) {
+        final m = RegExp(r'\b[A-Z0-9\-]{6,20}\b').firstMatch(line);
+        if (m != null && !RegExp(r'^\d+$').hasMatch(m.group(0)!)) {
+          sku = m.group(0)!;
+        }
+      }
+    }
+
+    return (name: name, brand: brand, sku: sku, allLines: lines);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FULL-SCREEN BARCODE + OCR SCANNER  (inventory variant)
+//
+//  Two modes:
+//    Barcode — auto-detects; looks up product name/brand online
+//    Read Text — takes a photo (image_picker); extracts product
+//                name, brand, SKU from label via ML Kit OCR
+//
+//  pubspec.yaml additions:
+//    google_mlkit_text_recognition: ^0.13.1   ← new
+//    (image_picker, path_provider already present)
+// ═══════════════════════════════════════════════════════════════
+enum _InvScanMode { barcode, ocr }
+
 class _BarcodeScannerScreen extends StatefulWidget {
   const _BarcodeScannerScreen();
-
   @override
   State<_BarcodeScannerScreen> createState() => _BarcodeScannerScreenState();
 }
@@ -945,10 +973,17 @@ class _BarcodeScannerScreen extends StatefulWidget {
 class _BarcodeScannerScreenState extends State<_BarcodeScannerScreen>
     with WidgetsBindingObserver {
   late final MobileScannerController _ctrl;
-  bool _torchOn = false;
-  bool _scanning = true;   // lock after first valid scan
-  bool _looking = false;   // true while API lookup is in flight
+  _InvScanMode _mode      = _InvScanMode.barcode;
+  bool _torchOn           = false;
+  bool _processing        = false;
+  bool _barcodeActive     = true;
   String? _lastBarcode;
+
+  // OCR state
+  dynamic _recognizer;   // TextRecognizer — dynamic to avoid web compile error
+  bool _ocrDone          = false;
+  List<String> _ocrLines = [];
+  String _ocrName = '', _ocrBrand = '', _ocrSku = '';
 
   @override
   void initState() {
@@ -959,341 +994,540 @@ class _BarcodeScannerScreenState extends State<_BarcodeScannerScreen>
       facing: CameraFacing.back,
       torchEnabled: false,
     );
+    if (!kIsWeb) {
+      try { _recognizer = TextRecognizer(script: TextRecognitionScript.latin); } catch (_) {}
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ctrl.dispose();
+    try { (_recognizer as dynamic)?.close(); } catch (_) {}
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!_ctrl.value.isInitialized) return;
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
       _ctrl.stop();
-    } else if (state == AppLifecycleState.resumed) {
+    } else if (state == AppLifecycleState.resumed && !_processing) {
       _ctrl.start();
     }
   }
 
   Future<void> _onDetect(BarcodeCapture capture) async {
-    if (!_scanning || _looking) return;
-    final barcodes = capture.barcodes
-        .where((b) => b.rawValue != null && b.rawValue!.isNotEmpty)
-        .toList();
-    if (barcodes.isEmpty) return;
+    if (_mode != _InvScanMode.barcode || !_barcodeActive || _processing) return;
+    final hits = capture.barcodes.where((b) => b.rawValue?.isNotEmpty == true).toList();
+    if (hits.isEmpty) return;
 
-    final rawValue = barcodes.first.rawValue!;
-    if (rawValue == _lastBarcode) return; // debounce same code
-    _lastBarcode = rawValue;
+    final raw = hits.first.rawValue!;
+    if (raw == _lastBarcode) return;
+    _lastBarcode = raw;
 
-    // Haptic feedback
     HapticFeedback.mediumImpact();
-
-    setState(() { _scanning = false; _looking = true; });
+    setState(() { _barcodeActive = false; _processing = true; });
     await _ctrl.stop();
 
-    // Show "looking up…" UI, then fetch
-    _ProductLookup? info;
-    try {
-      info = await _BarcodeLookupService.lookup(rawValue);
-    } catch (_) {}
+    final result = await _BarcodeLookupService.lookup(raw);
 
-    if (mounted) {
-      Navigator.of(context).pop(_ScanResult(
-        barcode: rawValue,
-        productInfo: info,
-      ));
+    if (mounted) Navigator.of(context).pop(result);
+  }
+
+  Future<void> _captureOcr() async {
+    if (_processing) return;
+    if (kIsWeb) { _manualEntry(); return; }
+
+    await _ctrl.stop();
+    XFile? photo;
+    try {
+      photo = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+        preferredCameraDevice: CameraDevice.rear,
+      );
+    } catch (_) {}
+    if (!_processing) _ctrl.start();
+    if (photo == null || !mounted) return;
+
+    setState(() { _processing = true; _ocrDone = false; });
+    try {
+      final recognized = await (_recognizer as TextRecognizer)
+          .processImage(InputImage.fromFilePath(photo.path));
+      try { File(photo.path).delete(); } catch (_) {}
+
+      final rawLines = recognized.blocks
+          .expand((b) => b.lines)
+          .map((l) => l.text.trim())
+          .where((t) => t.isNotEmpty)
+          .toList();
+
+      final parsed = _OcrProductParser.parse(rawLines);
+
+      if (!mounted) return;
+      if (parsed.allLines.isEmpty) {
+        setState(() => _processing = false);
+        _ctrl.start();
+        _showSnack('No text found — better lighting or move closer', isError: true);
+        return;
+      }
+
+      setState(() {
+        _processing = false; _ocrDone = true;
+        _ocrLines = parsed.allLines;
+        _ocrName  = parsed.name;
+        _ocrBrand = parsed.brand;
+        _ocrSku   = parsed.sku;
+      });
+
+      // Auto-confirm when we have a name
+      if (_ocrName.isNotEmpty) {
+        await Future.delayed(const Duration(milliseconds: 700));
+        if (mounted) _confirmOcr();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _processing = false);
+        _ctrl.start();
+        _showSnack('OCR failed: $e', isError: true);
+      }
     }
+  }
+
+  void _confirmOcr() {
+    HapticFeedback.mediumImpact();
+    Navigator.of(context).pop(_ScanResult(
+      barcode: _ocrSku,
+      name: _ocrName, brand: _ocrBrand,
+    ));
+  }
+
+  void _switchMode(_InvScanMode m) {
+    if (m == _mode) return;
+    setState(() {
+      _mode = m; _barcodeActive = true;
+      _ocrDone = false; _ocrLines = [];
+      _ocrName = _ocrBrand = _ocrSku = '';
+    });
+    if (!_processing) _ctrl.start();
+  }
+
+  void _manualEntry() {
+    final ctrl = TextEditingController();
+    showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Enter Barcode / SKU', style: GoogleFonts.syne(
+            fontWeight: FontWeight.w800, color: Colors.white)),
+        content: TextField(
+          controller: ctrl, autofocus: true,
+          style: GoogleFonts.syne(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'e.g. 012345678905 or SCR-SAM-S24',
+            hintStyle: GoogleFonts.syne(color: Colors.white38)),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c),
+              child: Text('Cancel', style: GoogleFonts.syne(color: Colors.white54))),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(c, ctrl.text.trim()),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF6C63FF),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+            child: Text('Confirm', style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    ).then((v) async {
+      if (v == null || v.isEmpty || !mounted) return;
+      setState(() { _processing = true; _lastBarcode = v; });
+      await _ctrl.stop();
+      final result = await _BarcodeLookupService.lookup(v);
+      if (mounted) Navigator.of(context).pop(result);
+    });
+  }
+
+  void _showSnack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg, style: GoogleFonts.syne(fontWeight: FontWeight.w700)),
+      backgroundColor: isError ? Colors.red.shade800 : C.bgElevated,
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    final h = MediaQuery.of(context).size.height;
+    final bottom = MediaQuery.of(context).padding.bottom;
+
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ── Live camera ───────────────────────────────────────
-          MobileScanner(
-            controller: _ctrl,
-            onDetect: _onDetect,
-          ),
+      body: Stack(fit: StackFit.expand, children: [
+        MobileScanner(controller: _ctrl, onDetect: _onDetect),
 
-          // ── Dark vignette overlay ─────────────────────────────
+        if (_mode == _InvScanMode.barcode)
           CustomPaint(painter: _ScanOverlayPainter()),
+        if (_mode == _InvScanMode.ocr && !_ocrDone)
+          CustomPaint(painter: _OcrVignettePainterInv()),
 
-          // ── Top bar ───────────────────────────────────────────
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: [
-                  // Back
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: Container(
-                      width: 40, height: 40,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.close, color: Colors.white, size: 20),
-                    ),
-                  ),
-                  const Spacer(),
-                  // Title
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(99),
-                    ),
-                    child: Text('Scan Barcode',
-                        style: GoogleFonts.syne(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white)),
-                  ),
-                  const Spacer(),
-                  // Torch toggle
-                  GestureDetector(
-                    onTap: () async {
-                      await _ctrl.toggleTorch();
-                      setState(() => _torchOn = !_torchOn);
-                    },
-                    child: Container(
-                      width: 40, height: 40,
-                      decoration: BoxDecoration(
-                        color: _torchOn
-                            ? Colors.amber.withValues(alpha: 0.8)
-                            : Colors.black.withValues(alpha: 0.55),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        _torchOn ? Icons.flash_on : Icons.flash_off,
-                        color: Colors.white, size: 20,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+        // Top bar
+        SafeArea(child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Row(children: [
+            _circleBtn(Icons.close, () => Navigator.pop(context)),
+            const Spacer(),
+            _InvModePill(mode: _mode, onChanged: _switchMode),
+            const Spacer(),
+            _circleBtn(
+              _torchOn ? Icons.flash_on : Icons.flash_off,
+              () async { await _ctrl.toggleTorch(); setState(() => _torchOn = !_torchOn); },
+              bg: _torchOn ? Colors.amber.withValues(alpha: 0.75) : null,
             ),
-          ),
+          ]),
+        )),
 
-          // ── Scan-box label ────────────────────────────────────
+        // Barcode hint
+        if (_mode == _InvScanMode.barcode && !_processing)
           Positioned(
-            top: MediaQuery.of(context).size.height * 0.28,
-            left: 0, right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(99),
-                ),
-                child: Text(
-                  'Align barcode within the frame',
-                  style: GoogleFonts.syne(
-                      fontSize: 12, color: Colors.white70),
-                ),
-              ),
-            ),
+            top: h * 0.28, left: 0, right: 0,
+            child: Center(child: _pill('Align barcode within the frame')),
           ),
 
-          // ── Lookup spinner / result ───────────────────────────
-          if (_looking)
-            Container(
-              color: Colors.black.withValues(alpha: 0.75),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(color: Colors.white),
-                    const SizedBox(height: 16),
-                    Text('Looking up product…',
-                        style: GoogleFonts.syne(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white)),
-                    const SizedBox(height: 6),
-                    Text(_lastBarcode ?? '',
-                        style: GoogleFonts.syne(
-                            fontSize: 12, color: Colors.white60)),
-                  ],
-                ),
-              ),
-            ),
+        // OCR instructions
+        if (_mode == _InvScanMode.ocr && !_processing && !_ocrDone)
+          Positioned(
+            top: h * 0.13, left: 20, right: 20,
+            child: Center(child: _pill(
+              kIsWeb
+                  ? 'OCR not available on web — tap Capture to enter manually'
+                  : 'Aim at product label or packaging\nthen tap Capture',
+            )),
+          ),
 
-          // ── Bottom hint — manual entry ────────────────────────
-          if (!_looking)
-            Positioned(
-              bottom: 0, left: 0, right: 0,
+        // OCR capture button
+        if (_mode == _InvScanMode.ocr && !_processing && !_ocrDone)
+          Positioned(
+            bottom: bottom + 44, left: 0, right: 0,
+            child: Center(child: GestureDetector(
+              onTap: _captureOcr,
               child: Container(
-                padding: EdgeInsets.fromLTRB(
-                    20, 20, 20, MediaQuery.of(context).padding.bottom + 24),
+                width: 72, height: 72,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.85),
-                      Colors.transparent,
-                    ],
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 3),
+                  color: Colors.white.withValues(alpha: 0.15),
+                ),
+                child: const Icon(Icons.camera_alt, color: Colors.white, size: 32),
+              ),
+            )),
+          ),
+
+        // OCR results
+        if (_mode == _InvScanMode.ocr && _ocrDone && !_processing)
+          _InvOcrResultPanel(
+            name: _ocrName, brand: _ocrBrand, sku: _ocrSku,
+            allLines: _ocrLines,
+            onConfirm: _confirmOcr,
+            onRetry: () => setState(() {
+              _ocrDone = false; _ocrLines = [];
+              _ocrName = _ocrBrand = _ocrSku = '';
+            }),
+          ),
+
+        // Processing spinner
+        if (_processing)
+          Container(
+            color: Colors.black.withValues(alpha: 0.78),
+            child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const CircularProgressIndicator(color: Colors.white),
+              const SizedBox(height: 16),
+              Text(
+                _mode == _InvScanMode.ocr ? 'Reading product label…' : 'Looking up product…',
+                style: GoogleFonts.syne(fontSize: 15,
+                    fontWeight: FontWeight.w700, color: Colors.white)),
+            ])),
+          ),
+
+        // Barcode bottom
+        if (_mode == _InvScanMode.barcode && !_processing)
+          Positioned(
+            bottom: 0, left: 0, right: 0,
+            child: Container(
+              padding: EdgeInsets.fromLTRB(20, 20, 20, bottom + 24),
+              decoration: BoxDecoration(gradient: LinearGradient(
+                begin: Alignment.bottomCenter, end: Alignment.topCenter,
+                colors: [Colors.black.withValues(alpha: 0.85), Colors.transparent],
+              )),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text("Can't scan? Switch to Read Text ↑ or enter manually",
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.syne(fontSize: 11, color: Colors.white54)),
+                const SizedBox(height: 10),
+                GestureDetector(
+                  onTap: _manualEntry,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+                    ),
+                    child: Text('⌨️  Type Barcode / SKU',
+                        style: GoogleFonts.syne(fontSize: 13,
+                            fontWeight: FontWeight.w700, color: Colors.white)),
                   ),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('Can\'t scan? Enter manually',
-                        style: GoogleFonts.syne(
-                            fontSize: 12, color: Colors.white54)),
-                    const SizedBox(height: 10),
-                    GestureDetector(
-                      onTap: () => _manualEntry(context),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 24, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.25)),
-                        ),
-                        child: Text('⌨️  Type Barcode / SKU',
-                            style: GoogleFonts.syne(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white)),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              ]),
             ),
-        ],
-      ),
+          ),
+      ]),
     );
   }
 
-  Future<void> _manualEntry(BuildContext context) async {
-    final ctrl = TextEditingController();
-    final entered = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text('Enter Barcode / SKU',
-            style: GoogleFonts.syne(
-                fontWeight: FontWeight.w800, color: Colors.white)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: TextInputType.text,
-          style: GoogleFonts.syne(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: 'e.g. 012345678905 or SCR-SAM-S24',
-            hintStyle: GoogleFonts.syne(color: Colors.white38),
-          ),
+  Widget _circleBtn(IconData icon, VoidCallback fn, {Color? bg}) =>
+      GestureDetector(
+        onTap: fn,
+        child: Container(
+          width: 40, height: 40,
+          decoration: BoxDecoration(
+              color: bg ?? Colors.black.withValues(alpha: 0.55),
+              shape: BoxShape.circle),
+          child: Icon(icon, color: Colors.white, size: 20),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('Cancel',
-                style: GoogleFonts.syne(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00C2FF),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-            child: Text('Look Up',
-                style: GoogleFonts.syne(
-                    fontWeight: FontWeight.w800, color: Colors.black)),
-          ),
-        ],
+      );
+
+  Widget _pill(String text) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+    decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(99)),
+    child: Text(text, textAlign: TextAlign.center,
+        style: GoogleFonts.syne(fontSize: 12, color: Colors.white70)),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+class _InvModePill extends StatelessWidget {
+  final _InvScanMode mode;
+  final ValueChanged<_InvScanMode> onChanged;
+  const _InvModePill({required this.mode, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(3),
+    decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(99)),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      _tab('Barcode',   Icons.qr_code_scanner, _InvScanMode.barcode),
+      _tab('Read Text', Icons.text_fields,      _InvScanMode.ocr),
+    ]),
+  );
+
+  Widget _tab(String label, IconData icon, _InvScanMode m) {
+    final sel = mode == m;
+    return GestureDetector(
+      onTap: () => onChanged(m),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+            color: sel ? const Color(0xFF6C63FF) : Colors.transparent,
+            borderRadius: BorderRadius.circular(99)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: Colors.white, size: 14),
+          const SizedBox(width: 5),
+          Text(label, style: GoogleFonts.syne(
+              fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white)),
+        ]),
       ),
     );
-
-    if (entered != null && entered.isNotEmpty && mounted) {
-      setState(() { _scanning = false; _looking = true; _lastBarcode = entered; });
-      await _ctrl.stop();
-      _ProductLookup? info;
-      try {
-        info = await _BarcodeLookupService.lookup(entered);
-      } catch (_) {}
-      if (mounted) {
-        // ignore: use_build_context_synchronously
-        Navigator.of(context).pop(_ScanResult(
-          barcode: entered,
-          productInfo: info,
-        ));
-      }
-    }
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  SCAN FRAME OVERLAY PAINTER
-//  Draws a clear rectangle in the middle and darkens the rest
-// ═══════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+class _InvOcrResultPanel extends StatelessWidget {
+  final String name, brand, sku;
+  final List<String> allLines;
+  final VoidCallback onConfirm, onRetry;
+  const _InvOcrResultPanel({
+    required this.name, required this.brand, required this.sku,
+    required this.allLines, required this.onConfirm, required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).padding.bottom;
+    final hasResult = name.isNotEmpty || brand.isNotEmpty || sku.isNotEmpty;
+    final otherLines = allLines
+        .where((l) => l != name && l != brand && l != sku && l.length >= 3)
+        .take(14).toList();
+
+    return Positioned.fill(
+      top: MediaQuery.of(context).padding.top + 60,
+      child: Container(
+        decoration: BoxDecoration(gradient: LinearGradient(
+          begin: Alignment.bottomCenter, end: Alignment.topCenter,
+          colors: [Colors.black.withValues(alpha: 0.97),
+                   Colors.black.withValues(alpha: 0.65)],
+        )),
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(20, 16, 20, bottom + 24),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+            if (hasResult) ...[
+              Container(
+                width: double.infinity, padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6C63FF).withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFF6C63FF), width: 1.5),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    const Icon(Icons.auto_awesome, color: Color(0xFF6C63FF), size: 16),
+                    const SizedBox(width: 6),
+                    Text('Product Detected', style: GoogleFonts.syne(
+                        fontSize: 11, fontWeight: FontWeight.w700,
+                        color: const Color(0xFF6C63FF))),
+                  ]),
+                  const SizedBox(height: 10),
+                  if (name.isNotEmpty)  _row('Name',  name),
+                  if (brand.isNotEmpty) _row('Brand', brand),
+                  if (sku.isNotEmpty)   _row('SKU',   sku, mono: true),
+                  const SizedBox(height: 14),
+                  SizedBox(width: double.infinity, height: 46,
+                    child: ElevatedButton.icon(
+                      onPressed: onConfirm,
+                      icon: const Icon(Icons.check_circle, size: 18, color: Colors.white),
+                      label: Text('Use These Details',
+                          style: GoogleFonts.syne(fontWeight: FontWeight.w800, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6C63FF),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        elevation: 0,
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            if (otherLines.isNotEmpty) ...[
+              Text('ALL TEXT FOUND', style: GoogleFonts.syne(
+                  fontSize: 10, fontWeight: FontWeight.w700,
+                  color: Colors.white38, letterSpacing: 0.5)),
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 8,
+                children: otherLines.map((l) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+                  ),
+                  child: Text(l, style: GoogleFonts.syne(
+                      fontSize: 11, color: Colors.white60)),
+                )).toList(),
+              ),
+              const SizedBox(height: 20),
+            ],
+
+            Center(child: GestureDetector(
+              onTap: onRetry,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+                ),
+                child: Text('🔄  Scan Again',
+                    style: GoogleFonts.syne(fontSize: 13,
+                        fontWeight: FontWeight.w700, color: Colors.white70)),
+              ),
+            )),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _row(String label, String value, {bool mono = false}) => Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Row(children: [
+      SizedBox(width: 60, child: Text(label, style: GoogleFonts.syne(
+          fontSize: 11, color: Colors.white54))),
+      Expanded(child: Text(value, style: mono
+          ? const TextStyle(fontFamily: 'monospace', fontSize: 13,
+                            color: Colors.white, letterSpacing: 1.2)
+          : GoogleFonts.syne(fontSize: 13, fontWeight: FontWeight.w700,
+                              color: Colors.white))),
+    ]),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  OVERLAY PAINTERS
+// ─────────────────────────────────────────────────────────────────────────────
 class _ScanOverlayPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final scanW = size.width * 0.72;
     final scanH = scanW * 0.55;
-    final left   = (size.width - scanW) / 2;
-    final top    = size.height * 0.35;
-    final right  = left + scanW;
-    final bottom = top + scanH;
-    final scanRect = Rect.fromLTRB(left, top, right, bottom);
+    final l = (size.width - scanW) / 2, t = size.height * 0.35;
+    final r = l + scanW, b = t + scanH;
 
-    // Darken everything except the scan box
-    final dimPaint = Paint()..color = Colors.black.withValues(alpha: 0.62);
-    final path = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addRRect(RRect.fromRectAndRadius(scanRect, const Radius.circular(14)))
-      ..fillType = PathFillType.evenOdd;
-    canvas.drawPath(path, dimPaint);
+    canvas.drawPath(
+      Path()
+        ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+        ..addRRect(RRect.fromRectAndRadius(
+            Rect.fromLTRB(l, t, r, b), const Radius.circular(14)))
+        ..fillType = PathFillType.evenOdd,
+      Paint()..color = Colors.black.withValues(alpha: 0.62),
+    );
 
-    // Corner brackets
-    const cornerLen = 22.0;
-    const cornerW   = 3.5;
-    final cornerPaint = Paint()
-      ..color = const Color(0xFF00C2FF)
-      ..strokeWidth = cornerW
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final corners = [
-      // Top-left
-      [Offset(left, top + cornerLen), Offset(left, top), Offset(left + cornerLen, top)],
-      // Top-right
-      [Offset(right - cornerLen, top), Offset(right, top), Offset(right, top + cornerLen)],
-      // Bottom-left
-      [Offset(left, bottom - cornerLen), Offset(left, bottom), Offset(left + cornerLen, bottom)],
-      // Bottom-right
-      [Offset(right - cornerLen, bottom), Offset(right, bottom), Offset(right, bottom - cornerLen)],
-    ];
-
-    for (final pts in corners) {
-      canvas.drawLine(pts[0], pts[1], cornerPaint);
-      canvas.drawLine(pts[1], pts[2], cornerPaint);
+    const cl = 22.0;
+    final p = Paint()..color = const Color(0xFF00C2FF)
+        ..strokeWidth = 3.5..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
+    void br(Offset a, Offset c, Offset d) {
+      canvas.drawLine(a, c, p); canvas.drawLine(c, d, p);
     }
+    br(Offset(l,t+cl), Offset(l,t), Offset(l+cl,t));
+    br(Offset(r-cl,t), Offset(r,t), Offset(r,t+cl));
+    br(Offset(l,b-cl), Offset(l,b), Offset(l+cl,b));
+    br(Offset(r-cl,b), Offset(r,b), Offset(r,b-cl));
 
-    // Scanning line animation — static line in middle (no AnimationController needed)
-    final linePaint = Paint()
-      ..color = const Color(0xFF00C2FF).withValues(alpha: 0.7)
-      ..strokeWidth = 2;
-    final midY = top + scanH / 2;
-    canvas.drawLine(Offset(left + 8, midY), Offset(right - 8, midY), linePaint);
+    canvas.drawLine(Offset(l+8, t+scanH/2), Offset(r-8, t+scanH/2),
+        Paint()..color = const Color(0xFF00C2FF).withValues(alpha: 0.7)
+               ..strokeWidth = 2);
   }
+  @override bool shouldRepaint(covariant CustomPainter _) => false;
+}
 
+class _OcrVignettePainterInv extends CustomPainter {
   @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint()..shader = RadialGradient(
+        center: Alignment.center, radius: 0.85,
+        colors: [Colors.transparent, Colors.black.withValues(alpha: 0.4)],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)));
+
+    const m = 28.0, cl = 30.0;
+    final p = Paint()..color = Colors.white.withValues(alpha: 0.65)
+        ..strokeWidth = 3..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
+    void br(Offset a, Offset c, Offset d) {
+      canvas.drawLine(a, c, p); canvas.drawLine(c, d, p);
+    }
+    br(Offset(m,m+cl),                       Offset(m,m),                       Offset(m+cl,m));
+    br(Offset(size.width-m-cl,m),             Offset(size.width-m,m),            Offset(size.width-m,m+cl));
+    br(Offset(m,size.height-m-cl),            Offset(m,size.height-m),           Offset(m+cl,size.height-m));
+    br(Offset(size.width-m-cl,size.height-m), Offset(size.width-m,size.height-m),Offset(size.width-m,size.height-m-cl));
+  }
+  @override bool shouldRepaint(covariant CustomPainter _) => false;
 }
