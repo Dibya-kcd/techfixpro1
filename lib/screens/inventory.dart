@@ -240,13 +240,32 @@ class _InvState extends ConsumerState<InventoryScreen> {
                 ),
         ),
       ]),
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'fab_inventory',
-        onPressed: () => _openProductForm(context, null),
-        backgroundColor: C.primary,
-        foregroundColor: C.bg,
-        icon: const Icon(Icons.add),
-        label: Text('Add Product', style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Scan to add
+          FloatingActionButton(
+            heroTag: 'fab_scan',
+            onPressed: () => _scanToAdd(context),
+            backgroundColor: C.bgElevated,
+            foregroundColor: C.primary,
+            mini: true,
+            tooltip: 'Scan barcode to add/update',
+            child: const Icon(Icons.qr_code_scanner),
+          ),
+          const SizedBox(height: 10),
+          // Manual add
+          FloatingActionButton.extended(
+            heroTag: 'fab_inventory',
+            onPressed: () => _openProductForm(context, null),
+            backgroundColor: C.primary,
+            foregroundColor: C.bg,
+            icon: const Icon(Icons.add),
+            label: Text('Add Product',
+                style: GoogleFonts.syne(fontWeight: FontWeight.w800)),
+          ),
+        ],
       ),
     );
   }
@@ -274,6 +293,175 @@ class _InvState extends ConsumerState<InventoryScreen> {
   void _openProductForm(BuildContext context, Product? p) =>
       Navigator.of(context).push(MaterialPageRoute(
           builder: (_) => ProductFormScreen(product: p)));
+
+  /// Scan barcode from the inventory list screen.
+  /// 1. Open scanner → get barcode + online product info
+  /// 2. Check if SKU already exists in local provider
+  ///    YES → show "Already in stock" sheet with +qty buttons
+  ///    NO  → open ProductFormScreen pre-filled with all scan data
+  Future<void> _scanToAdd(BuildContext context) async {
+    final result = await Navigator.of(context).push<_ScanResult>(
+      MaterialPageRoute(builder: (_) => const _BarcodeScannerScreen()),
+    );
+    if (result == null || !mounted) return;
+
+    // Check for existing product with same SKU / barcode
+    final products = ref.read(productsProvider);
+    final existing = products.where(
+      (p) => p.sku.trim().toLowerCase() == result.barcode.trim().toLowerCase(),
+    ).firstOrNull;
+
+    if (existing != null) {
+      // Already in stock — show quick-restock sheet
+      _showRestockSheet(context, existing, result);
+    } else {
+      // New product — open pre-filled form
+      if (!context.mounted) return;
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => ProductFormScreen(scanResult: result),
+      ));
+    }
+  }
+
+  /// Quick-restock bottom sheet when scanned product already exists
+  void _showRestockSheet(BuildContext ctx, Product p, _ScanResult scan) {
+    int qty = 1;
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: C.bgElevated,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheet) => Padding(
+          padding: EdgeInsets.fromLTRB(
+              24, 20, 24, MediaQuery.of(sheetCtx).viewInsets.bottom + 32),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // Handle
+            Container(width: 40, height: 4,
+                decoration: BoxDecoration(color: C.border,
+                    borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 20),
+
+            // Product summary
+            Row(children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: C.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10)),
+                child: const Icon(Icons.inventory_2, color: C.primary, size: 22),
+              ),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(p.productName, style: GoogleFonts.syne(
+                    fontSize: 15, fontWeight: FontWeight.w800, color: C.white)),
+                Text('${p.brand}  ·  SKU: ${p.sku}', style: GoogleFonts.syne(
+                    fontSize: 12, color: C.textMuted)),
+              ])),
+            ]),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(color: C.green.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('Already in stock', style: GoogleFonts.syne(
+                    fontSize: 12, color: C.green)),
+                Text('Current stock: ${p.stockQty} units', style: GoogleFonts.syne(
+                    fontSize: 12, fontWeight: FontWeight.w700, color: C.green)),
+              ]),
+            ),
+            const SizedBox(height: 20),
+
+            // Quantity picker
+            Text('Add quantity', style: GoogleFonts.syne(
+                fontSize: 13, color: C.textMuted, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 10),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              _qtyBtn(Icons.remove, () {
+                if (qty > 1) setSheet(() => qty--);
+              }),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text('$qty', style: GoogleFonts.syne(
+                    fontSize: 28, fontWeight: FontWeight.w800, color: C.white)),
+              ),
+              _qtyBtn(Icons.add, () => setSheet(() => qty++)),
+            ]),
+            const SizedBox(height: 8),
+            // Quick presets
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              for (final n in [5, 10, 25, 50])
+                GestureDetector(
+                  onTap: () => setSheet(() => qty = n),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: qty == n
+                          ? C.primary.withValues(alpha: 0.2)
+                          : C.bg.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: qty == n ? C.primary : C.border),
+                    ),
+                    child: Text('+$n', style: GoogleFonts.syne(
+                        fontSize: 12, fontWeight: FontWeight.w700,
+                        color: qty == n ? C.primary : C.textMuted)),
+                  ),
+                ),
+            ]),
+            const SizedBox(height: 24),
+
+            // Confirm button
+            SizedBox(
+              width: double.infinity, height: 50,
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  Navigator.pop(sheetCtx);
+                  _adjustQty(p, qty);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(
+                        '✅ Added $qty to ${p.productName} — now ${p.stockQty + qty} in stock',
+                        style: GoogleFonts.syne(fontWeight: FontWeight.w700),
+                      ),
+                      backgroundColor: C.green,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ));
+                  }
+                },
+                icon: const Icon(Icons.add_circle, size: 18),
+                label: Text('Add $qty to Stock',
+                    style: GoogleFonts.syne(
+                        fontWeight: FontWeight.w800, fontSize: 15)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: C.primary,
+                  foregroundColor: C.bg,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            // Option to edit the product instead
+            TextButton(
+              onPressed: () {
+                Navigator.pop(sheetCtx);
+                _openProductForm(context, p);
+              },
+              child: Text('Edit product details instead',
+                  style: GoogleFonts.syne(
+                      fontSize: 13, color: C.textMuted)),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
 
   void _showStockHistory(BuildContext context, Product p) {
     showModalBottomSheet(
@@ -446,7 +634,8 @@ class _InvState extends ConsumerState<InventoryScreen> {
 // ═══════════════════════════════════════════════════════════════
 class ProductFormScreen extends ConsumerStatefulWidget {
   final Product? product;
-  const ProductFormScreen({super.key, this.product});
+  final _ScanResult? scanResult; // pre-fill from barcode scan
+  const ProductFormScreen({super.key, this.product, this.scanResult});
   @override
   ConsumerState<ProductFormScreen> createState() => _ProdFormState();
 }
@@ -464,17 +653,20 @@ class _ProdFormState extends ConsumerState<ProductFormScreen> {
   @override
   void initState() {
     super.initState();
-    final p = widget.product;
-    _name        = TextEditingController(text: p?.productName ?? '');
-    _sku         = TextEditingController(text: p?.sku ?? '');
-    _brand       = TextEditingController(text: p?.brand ?? '');
-    _description = TextEditingController(text: p?.description ?? '');
+    final p    = widget.product;
+    final scan = widget.scanResult;
+    // When coming from a barcode scan (new product), scanResult takes priority.
+    // When editing an existing product, widget.product takes priority.
+    _name        = TextEditingController(text: p?.productName ?? scan?.name ?? '');
+    _sku         = TextEditingController(text: p?.sku ?? scan?.barcode ?? '');
+    _brand       = TextEditingController(text: p?.brand ?? scan?.brand ?? '');
+    _description = TextEditingController(text: p?.description ?? scan?.description ?? '');
     _supplier    = TextEditingController(text: p?.supplierName ?? '');
     _cost        = TextEditingController(text: p?.costPrice.toStringAsFixed(0) ?? '');
     _price       = TextEditingController(text: p?.sellingPrice.toStringAsFixed(0) ?? '');
     _qty         = TextEditingController(text: p?.stockQty.toString() ?? '0');
     _reorder     = TextEditingController(text: p?.reorderLevel.toString() ?? '5');
-    _cat         = p?.category ?? 'Spare Parts';
+    _cat         = p?.category ?? scan?.category ?? 'Spare Parts';
   }
 
   @override
@@ -828,61 +1020,138 @@ class _ScanResult {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  BARCODE LOOKUP SERVICE  (free, no API key)
-//  Open Food Facts → UPC Item DB → returns name/brand/description
+//  BARCODE LOOKUP SERVICE
+//
+//  Fires go-upc.com AND UPC Item DB in PARALLEL (Future.wait).
+//  Results are merged field-by-field — best data wins:
+//    • go-upc  → strongest for electronics / phone parts / accessories
+//    • UPC DB  → strongest for general retail, fills any gaps go-upc missed
+//  Open Food Facts fires only if both primary sources return nothing.
 // ═══════════════════════════════════════════════════════════════
 class _BarcodeLookupService {
-  static Future<_ScanResult> lookup(String barcode) async {
-    // Try 1: Open Food Facts
+  static const _ua      = {'User-Agent': 'TechFixPro/3.0 (repair-shop-app)'};
+  static const _timeout = Duration(seconds: 8);
+
+  // ── Raw result holder from each source ──────────────────────
+  static ({String name, String brand, String desc, String cat}) _empty() =>
+      (name: '', brand: '', desc: '', cat: '');
+
+  // ── go-upc.com ───────────────────────────────────────────────
+  static Future<({String name, String brand, String desc, String cat})>
+      _fetchGoUpc(String barcode) async {
     try {
-      final r = await http.get(
-        Uri.parse('https://world.openfoodfacts.org/api/v0/product/$barcode.json'),
-      ).timeout(const Duration(seconds: 6));
+      final r = await http
+          .get(Uri.parse('https://go-upc.com/api/v1/code/$barcode'), headers: _ua)
+          .timeout(_timeout);
+      if (r.statusCode == 200) {
+        final j    = jsonDecode(r.body) as Map<String, dynamic>;
+        final prod = j['product'] as Map<String, dynamic>? ?? {};
+        return (
+          name:  (prod['name']        as String?) ?? '',
+          brand: (prod['brand']       as String?) ?? '',
+          desc:  (prod['description'] as String?) ?? '',
+          cat:   (prod['category']    as String?) ?? '',
+        );
+      }
+    } catch (_) {}
+    return _empty();
+  }
+
+  // ── UPC Item DB ──────────────────────────────────────────────
+  static Future<({String name, String brand, String desc, String cat})>
+      _fetchUpcItemDb(String barcode) async {
+    try {
+      final r = await http
+          .get(
+            Uri.parse('https://api.upcitemdb.com/prod/trial/lookup?upc=$barcode'),
+            headers: {'Accept': 'application/json', ..._ua},
+          )
+          .timeout(_timeout);
+      if (r.statusCode == 200) {
+        final j     = jsonDecode(r.body) as Map<String, dynamic>;
+        final items = (j['items'] as List<dynamic>?) ?? [];
+        if (items.isNotEmpty) {
+          final item = items.first as Map<String, dynamic>;
+          // UPC DB sometimes returns category under 'category' field
+          final rawCat = (item['category'] as String?) ?? '';
+          return (
+            name:  (item['title']       as String?) ?? '',
+            brand: (item['brand']       as String?) ?? '',
+            desc:  (item['description'] as String?) ?? '',
+            cat:   rawCat,
+          );
+        }
+      }
+    } catch (_) {}
+    return _empty();
+  }
+
+  // ── Open Food Facts (fallback only) ─────────────────────────
+  static Future<({String name, String brand, String desc, String cat})>
+      _fetchOpenFood(String barcode) async {
+    try {
+      final r = await http
+          .get(
+            Uri.parse('https://world.openfoodfacts.org/api/v0/product/$barcode.json'),
+            headers: _ua,
+          )
+          .timeout(_timeout);
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         if ((j['status'] as int?) == 1) {
           final p = j['product'] as Map<String, dynamic>? ?? {};
-          final name  = (p['product_name']  as String?) ?? '';
-          final brand = (p['brands']        as String?) ?? '';
-          final desc  = (p['generic_name']  as String?)
-              ?? (p['ingredients_text'] as String?)?.split(',').take(3).join(', ')
-              ?? '';
-          if (name.isNotEmpty || brand.isNotEmpty) {
-            return _ScanResult(
-              barcode: barcode, name: name,
-              brand: brand.split(',').first.trim(), description: desc,
-              category: _guessCategory(name, brand),
-            );
-          }
+          final brand = (p['brands'] as String?) ?? '';
+          return (
+            name:  (p['product_name'] as String?) ?? '',
+            brand: brand.split(',').first.trim(),
+            desc:  (p['generic_name'] as String?)
+                ?? (p['ingredients_text'] as String?)
+                    ?.split(',')
+                    .take(3)
+                    .join(', ')
+                ?? '',
+            cat: '',
+          );
         }
       }
     } catch (_) {}
+    return _empty();
+  }
 
-    // Try 2: UPC Item DB
-    try {
-      final r = await http.get(
-        Uri.parse('https://api.upcitemdb.com/prod/trial/lookup?upc=$barcode'),
-        headers: {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 6));
-      if (r.statusCode == 200) {
-        final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final items = (j['items'] as List<dynamic>?) ?? [];
-        if (items.isNotEmpty) {
-          final item  = items.first as Map<String, dynamic>;
-          final name  = (item['title']       as String?) ?? '';
-          final brand = (item['brand']        as String?) ?? '';
-          final desc  = (item['description']  as String?) ?? '';
-          if (name.isNotEmpty) {
-            return _ScanResult(
-              barcode: barcode, name: name, brand: brand,
-              description: desc, category: _guessCategory(name, brand),
-            );
-          }
-        }
-      }
-    } catch (_) {}
+  // ── Main entry point ─────────────────────────────────────────
+  static Future<_ScanResult> lookup(String barcode) async {
+    // Fire primary sources in parallel
+    final results = await Future.wait([
+      _fetchGoUpc(barcode),
+      _fetchUpcItemDb(barcode),
+    ]);
 
-    return _ScanResult(barcode: barcode);
+    final goUpc  = results[0];
+    final upcDb  = results[1];
+
+    // Merge: prefer go-upc for each field (better for electronics),
+    // fall through to UPC Item DB for any field go-upc left blank.
+    String name  = goUpc.name.isNotEmpty  ? goUpc.name  : upcDb.name;
+    String brand = goUpc.brand.isNotEmpty ? goUpc.brand : upcDb.brand;
+    String desc  = goUpc.desc.isNotEmpty  ? goUpc.desc  : upcDb.desc;
+    String cat   = goUpc.cat.isNotEmpty   ? goUpc.cat   : upcDb.cat;
+
+    // If both primary sources returned nothing, try Open Food Facts
+    if (name.isEmpty && brand.isEmpty) {
+      final food = await _fetchOpenFood(barcode);
+      name  = food.name;
+      brand = food.brand;
+      desc  = food.desc;
+    }
+
+    // Resolve category
+    final resolvedCat = cat.isNotEmpty ? cat : _guessCategory(name, brand);
+
+    return _ScanResult(
+      barcode: barcode,
+      name: name, brand: brand,
+      description: desc, category: resolvedCat,
+    );
   }
 
   static String _guessCategory(String name, String brand) {
