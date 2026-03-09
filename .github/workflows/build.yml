@@ -32,7 +32,6 @@ jobs:
           channel: stable
           cache: true
 
-      # Write google-services.json using printf (most reliable for JSON)
       - name: Write google-services.json
         run: |
           cat > android/app/google-services.json << 'GOOGLEEOF'
@@ -46,7 +45,7 @@ jobs:
             "client": [
               {
                 "client_info": {
-                  "mobilesdk_app_id": "1:709235793243:android:c915a3c1bec6f87cec8e7e",
+                  "mobilesdk_app_id": "1:709235793243:android:ab3e909140fc1c83ec8e7e",
                   "android_client_info": {
                     "package_name": "com.example.techfix_pro"
                   }
@@ -67,18 +66,15 @@ jobs:
             "configuration_version": "1"
           }
           GOOGLEEOF
-          echo "--- google-services.json written ---"
-          cat android/app/google-services.json
 
-      # Decode keystore from base64
       - name: Write keystore
         run: |
           echo '${{ secrets.KEYSTORE_BASE64 }}' | base64 --decode > android/app/techfixpro.jks
+          echo "Keystore size: $(wc -c < android/app/techfixpro.jks) bytes"
 
-      # Write key.properties
       - name: Write key.properties
         run: |
-          cat > android/key.properties << EOF
+          cat > android/key.properties << 'EOF'
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword=${{ secrets.KEY_PASSWORD }}
           keyAlias=${{ secrets.KEY_ALIAS }}
