@@ -32,15 +32,43 @@ jobs:
           channel: stable
           cache: true
 
-      # Write google-services.json using env var (safe for multiline JSON)
+      # Write google-services.json using printf (most reliable for JSON)
       - name: Write google-services.json
-        env:
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          echo "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
-          echo "--- Verifying google-services.json ---"
+          cat > android/app/google-services.json << 'GOOGLEEOF'
+          {
+            "project_info": {
+              "project_number": "709235793243",
+              "firebase_url": "https://techfixv1-default-rtdb.firebaseio.com",
+              "project_id": "techfixv1",
+              "storage_bucket": "techfixv1.firebasestorage.app"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:709235793243:android:c915a3c1bec6f87cec8e7e",
+                  "android_client_info": {
+                    "package_name": "com.example.techfix_pro"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyCKL7UHahmTD8luaE4wzrsnt1l2Gao33j8"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          GOOGLEEOF
+          echo "--- google-services.json written ---"
           cat android/app/google-services.json
-          echo "--- End of file ---"
 
       # Decode keystore from base64
       - name: Write keystore
