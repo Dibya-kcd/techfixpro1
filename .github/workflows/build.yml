@@ -1,0 +1,106 @@
+name: Build APK
+
+# ─── Triggers ──────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main          # auto-build on every push to main
+  workflow_dispatch:  # also allows manual trigger from GitHub UI
+
+# ─── Job ───────────────────────────────────────────────────────────────────────
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # 1 ── Checkout code from Git ────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2 ── Set up Java (required by Android build tools) ─────────────────────
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 3 ── Set up Flutter ─────────────────────────────────────────────────────
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.0'   # pin to your exact Flutter version
+          channel: stable
+          cache: true                  # caches Flutter SDK between runs
+
+      # 4 ── Write google-services.json from GitHub Secret ─────────────────────
+      #      Never commit this file to Git — store it as a secret instead.
+      #      Go to: GitHub repo → Settings → Secrets → Actions → New secret
+      #      Name: GOOGLE_SERVICES_JSON
+      #      Value: paste the entire contents of your google-services.json
+      - name: Write google-services.json
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > android/app/google-services.json
+
+      # 5 ── Write keystore from GitHub Secret ─────────────────────────────────
+      #      Base64-encode your .jks file and store it as KEYSTORE_BASE64 secret:
+      #        Mac/Linux:  base64 -i techfixpro.jks | pbcopy
+      #        Windows:    certutil -encode techfixpro.jks tmp.b64 && type tmp.b64
+      - name: Write keystore
+        run: |
+          echo '${{ secrets.KEYSTORE_BASE64 }}' | base64 --decode > android/app/techfixpro.jks
+
+      # 6 ── Write key.properties from GitHub Secrets ──────────────────────────
+      #      Store each value separately as secrets:
+      #        KEYSTORE_PASSWORD   → your keystore password
+      #        KEY_PASSWORD        → your key password  
+      #        KEY_ALIAS           → techfixpro  (or whatever alias you used)
+      - name: Write key.properties
+        run: |
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=techfixpro.jks
+          EOF
+
+      # 7 ── Install dependencies ───────────────────────────────────────────────
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # 8 ── Analyze (optional — remove if you want faster builds) ─────────────
+      - name: Flutter analyze
+        run: flutter analyze --no-fatal-infos
+
+      # 9 ── Build release APK (split by ABI for smaller file sizes) ────────────
+      - name: Build APK
+        run: flutter build apk --split-per-abi --release
+
+      # 10 ── Upload APKs as build artifacts ────────────────────────────────────
+      #       After build, go to GitHub → Actions → your run → Artifacts
+      #       to download the APKs. Kept for 30 days.
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apks-${{ github.run_number }}
+          path: |
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          retention-days: 30
+
+      # 11 ── Create GitHub Release with APK attached (on push to main) ─────────
+      #       This creates a versioned release you can share directly.
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          body: |
+            Automated build from commit ${{ github.sha }}
+            Branch: ${{ github.ref_name }}
+          files: |
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          generate_release_notes: true
