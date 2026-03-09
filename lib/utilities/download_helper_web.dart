@@ -1,4 +1,4 @@
-// lib/utils/download_helper_web.dart
+// lib/utilities/download_helper_web.dart
 // Web implementation — triggers real browser file download.
 import 'dart:convert';
 import 'dart:js_interop';
