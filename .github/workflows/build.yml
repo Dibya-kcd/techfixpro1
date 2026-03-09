@@ -67,17 +67,26 @@ jobs:
           }
           GOOGLEEOF
 
-      - name: Write keystore
+      # Generate a fresh keystore directly on the runner — no upload needed
+      - name: Generate keystore
         run: |
-          echo '${{ secrets.KEYSTORE_BASE64 }}' | base64 --decode > android/app/techfixpro.jks
-          echo "Keystore size: $(wc -c < android/app/techfixpro.jks) bytes"
+          keytool -genkey -v \
+            -keystore android/app/techfixpro.jks \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -alias techfixpro \
+            -storepass Chanty@123 \
+            -keypass Chanty@123 \
+            -dname "CN=Dibya Mahapatra, OU=MrWater, O=MrWater, L=Kuchinda, ST=Odisha, C=IN"
+          echo "Keystore created: $(wc -c < android/app/techfixpro.jks) bytes"
 
       - name: Write key.properties
         run: |
           cat > android/key.properties << 'EOF'
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
+          storePassword=Chanty@123
+          keyPassword=Chanty@123
+          keyAlias=techfixpro
           storeFile=techfixpro.jks
           EOF
 
